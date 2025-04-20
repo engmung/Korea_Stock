@@ -327,6 +327,15 @@ async def reset_channels_daily() -> None:
     else:
         print("일부 또는 모든 채널의 활성화에 실패했습니다.")
 
+def run_async_task(coroutine):
+    """비동기 코루틴을 새 이벤트 루프에서 실행합니다."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coroutine)
+    finally:
+        loop.close()
+
 def setup_scheduler() -> AsyncIOScheduler:
     """스케줄러를 설정하고 작업을 예약합니다."""
     global scheduler
@@ -338,7 +347,7 @@ def setup_scheduler() -> AsyncIOScheduler:
     
     # 새벽 4시에 모든 채널 초기화
     scheduler.add_job(
-        reset_channels_daily,
+        lambda: run_async_task(reset_channels_daily()),
         CronTrigger(hour=4, minute=0),
         id="reset_channels_daily",
         replace_existing=True
@@ -346,9 +355,9 @@ def setup_scheduler() -> AsyncIOScheduler:
     
     # 매시간 정각에 작업 실행 (0-23시)
     for hour in range(24):
-        # 현재 시간을 인자로 전달
+        # 현재 시간을 인자로 전달하여 비동기 작업을 동기적으로 실행
         scheduler.add_job(
-            lambda h=hour: asyncio.create_task(process_channels_by_setting(h)),
+            lambda h=hour: run_async_task(process_channels_by_setting(h)),
             CronTrigger(hour=hour, minute=0),
             id=f"process_channels_{hour}",
             replace_existing=True
