@@ -399,11 +399,12 @@ def parse_duration_to_seconds(iso_duration: str) -> int:
 async def find_latest_video_for_channel(channel_id: str, keyword: str, max_results: int = 50) -> Optional[Dict[str, Any]]:
     """
     채널에서 키워드가 포함된 최신 영상을 찾습니다.
+    최신 영상 검색 시 50개로 제한합니다.
     
     Args:
         channel_id: YouTube 채널 ID
         keyword: 검색할 키워드
-        max_results: 검색할 최대 영상 수
+        max_results: 검색할 최대 영상 수 (기본값 50개)
         
     Returns:
         최신 영상 정보 또는 None

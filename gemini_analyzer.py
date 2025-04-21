@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 API_SEMAPHORE = asyncio.Semaphore(2)
 API_RATE_LIMIT_SECONDS = 60  # 1분 딜레이
 
-async def analyze_script_with_gemini(script: str, video_title: str, channel_name: str) -> str:
+async def analyze_script_with_gemini(script: str, video_title: str, channel_name: str, program_name: str = "") -> str:
     """
     Gemini API를 사용하여 스크립트를 분석하고 마크다운 보고서를 생성합니다.
     
@@ -19,6 +19,7 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
         script: 분석할 유튜브 스크립트
         video_title: 영상 제목
         channel_name: 채널명
+        program_name: 프로그램명 (제목에 표시됨)
     
     Returns:
         마크다운 형식의 분석 보고서 또는 오류 시 오류 메시지
@@ -28,13 +29,14 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             logger.error("GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.")
-            return "# AI 분석 보고서\n\n## 분석 오류\n\nGEMINI_API_KEY 환경 변수가 설정되지 않았습니다."
+            return f"# {program_name} - 주식 종목 분석 보고서\n\n## 분석 오류\n\nGEMINI_API_KEY 환경 변수가 설정되지 않았습니다."
         
         # 프롬프트 작성 - 주식 종목 분석에 특화된 프롬프트
         prompt = f"""# 주식 종목 분석 요청
 
 제목: {video_title}
 채널: {channel_name}
+프로그램명: {program_name}
 
 내가 주는 스크립트의 내용을 필요한 내용만 정리한 보고서로 만들어줘. 내가 주식종목채널의 콘텐츠를 주면, 너는 거기서 언급되는 종목들과 그 내용을 상세하게 기록해줘. 언급된 이유, 추천정도, 투자관점 등등 자세하게. 다른 내용은 필요 없고, 오로지 종목과 그에 관한 정보만 줘. 시장 전반에 대한 언급같은 건 필요 없어."""
 
@@ -60,20 +62,21 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
                     ]
                     
                     # 시스템 지시사항 설정 - 종목 분석에 특화
-                    system_instruction = """당신은 투자 전문가로서 주식 종목 분석을 담당합니다. 주어진 스크립트에서 언급된 주식 종목과 관련 정보만을 추출하여 정리해주세요. 
+                    system_instruction = f"""당신은 투자 전문가로서 주식 종목 분석을 담당합니다. 주어진 스크립트에서 언급된 주식 종목과 관련 정보만을 추출하여 정리해주세요. 
 
 다음 지침을 반드시 따르세요:
 
-1. 종목 중심으로 정보를 정리하세요. 시장 전반에 대한 일반적인 내용은 제외합니다.
-2. 각 종목에 대해 다음 정보를 포함하세요:
+1. 보고서 제목을 "{program_name} - 주식 종목 분석 보고서"로 작성하세요.
+2. 종목 중심으로 정보를 정리하세요. 시장 전반에 대한 일반적인 내용은 제외합니다.
+3. 각 종목에 대해 다음 정보를 포함하세요:
    - 언급 이유
    - 추천 정도 (적극 매수/매수/중립/매도 등)
    - 투자 관점 (단기/중기/장기)
    - 주요 내용
 
-3. 정보가 없는 경우 "언급되지 않음"으로 표시하세요.
-4. 마크다운 형식으로 작성하고, 각 종목은 제목(##)으로 구분하세요.
-5. 종목명은 정확하게 작성하세요. 오타가 있을 경우 올바른 종목명을 사용하세요."""
+4. 정보가 없는 경우 "언급되지 않음"으로 표시하세요.
+5. 마크다운 형식으로 작성하고, 각 종목은 제목(##)으로 구분하세요.
+6. 종목명은 정확하게 작성하세요. 오타가 있을 경우 올바른 종목명을 사용하세요."""
                     
                     generate_content_config = types.GenerateContentConfig(
                         response_mime_type="text/plain",
@@ -98,14 +101,14 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
                     return response_text
                 except Exception as e:
                     logger.error(f"Gemini 함수 내 오류: {str(e)}")
-                    return f"# AI 분석 보고서\n\n## Gemini API 오류\n\n{str(e)}"
+                    return f"# {program_name} - 주식 종목 분석 보고서\n\n## Gemini API 오류\n\n{str(e)}"
             
             # 비동기적으로 API 호출 실행
             try:
                 response_text = await asyncio.to_thread(call_gemini)
             except Exception as e:
                 logger.error(f"asyncio.to_thread 오류: {str(e)}")
-                return f"# AI 분석 보고서\n\n## 분석 오류\n\nasyncio.to_thread 실행 중 오류가 발생했습니다: {str(e)}"
+                return f"# {program_name} - 주식 종목 분석 보고서\n\n## 분석 오류\n\nasyncio.to_thread 실행 중 오류가 발생했습니다: {str(e)}"
             
             # API 호출 후 경과 시간 계산
             elapsed_time = asyncio.get_event_loop().time() - start_time
@@ -121,7 +124,7 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
                 
                 # 응답이 마크다운 형식인지 확인하고 수정
                 if not response_text.startswith("# "):
-                    response_text = "# 주식 종목 분석 보고서\n\n" + response_text
+                    response_text = f"# {program_name} - 주식 종목 분석 보고서\n\n" + response_text
                 
                 # 마크다운 형식 일관성 개선
                 response_text = clean_markdown_format(response_text)
@@ -129,11 +132,11 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
                 return response_text
             else:
                 logger.error("Gemini가 빈 응답을 반환했습니다.")
-                return "# 주식 종목 분석 보고서\n\n## 분석 오류\n\nGemini API가 응답을 생성하지 못했습니다."
+                return f"# {program_name} - 주식 종목 분석 보고서\n\n## 분석 오류\n\nGemini API가 응답을 생성하지 못했습니다."
             
     except Exception as e:
         logger.error(f"Gemini API 호출 중 오류 발생: {str(e)}")
-        return f"# 주식 종목 분석 보고서\n\n## 분석 오류\n\nGemini API 호출 중 오류가 발생했습니다: {str(e)}"
+        return f"# {program_name} - 주식 종목 분석 보고서\n\n## 분석 오류\n\nGemini API 호출 중 오류가 발생했습니다: {str(e)}"
 
 
 def clean_markdown_format(text: str) -> str:

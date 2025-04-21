@@ -125,7 +125,7 @@ async def process_video(video: Dict[str, Any], channel_name: str, keyword: str) 
             # 스크립트 분석
             try:
                 print(f"Gemini API로 스크립트 분석 시작: {video['title']}")
-                analysis = await analyze_script_with_gemini(script, video['title'], channel_name)
+                analysis = await analyze_script_with_gemini(script, video['title'], channel_name, keyword)
                 
                 # 분석 결과만 사용 (원본 스크립트 제외)
                 combined_content = analysis
@@ -133,7 +133,7 @@ async def process_video(video: Dict[str, Any], channel_name: str, keyword: str) 
             except Exception as e:
                 print(f"AI 분석 중 오류 발생: {str(e)}")
                 # 분석 실패 시 간단한 오류 메시지 저장
-                combined_content = f"# AI 분석 보고서\n\n## 분석 오류\n\n분석 과정에서 오류가 발생했습니다: {str(e)}"
+                combined_content = f"# {keyword} - 주식 종목 분석 보고서\n\n## 분석 오류\n\n분석 과정에서 오류가 발생했습니다: {str(e)}"
                 print("AI 분석에 실패했습니다. 오류 메시지를 저장합니다.")
             
             # Notion 페이지 속성 설정
@@ -364,7 +364,7 @@ async def process_all_channels_historical_data(
     videos_per_channel: int = 500, 
     process_limit_per_channel: int = 20,
     target_programs: Optional[List[str]] = None,
-    concurrent_channels: int = 1
+    concurrent_channels: int = 3
 ) -> Dict[str, Any]:
     """모든 채널의 과거 데이터를 처리합니다."""
     print("모든 채널 과거 데이터 처리 시작")
@@ -482,10 +482,10 @@ async def main():
     try:
         # 모든 채널 과거 데이터 처리
         result = await process_all_channels_historical_data(
-            videos_per_channel=500,  # 각 채널에서 가져올 최대 영상 수 (500개로 증가)
-            process_limit_per_channel=20,   # 각 채널에서 실제로 처리할 최대 영상 수 (20개로 증가)
+            videos_per_channel=500,  # 각 채널에서 가져올 최대 영상 수 (500개로 유지)
+            process_limit_per_channel=20,  # 각 채널에서 실제로 처리할 최대 영상 수 (20개로 유지)
             target_programs=["주말라이브 주식싹쓰리", "최현덕"],  # 특정 프로그램만 처리
-            concurrent_channels=3  # 3개 채널 동시 처리
+            concurrent_channels=3  # 3개 채널 동시 처리 (그대로 유지)
         )
         
         print(f"처리 결과: {result['status']}")

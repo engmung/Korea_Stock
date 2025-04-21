@@ -74,8 +74,8 @@ async def process_channel(page: Dict[str, Any]) -> bool:
             print(f"채널 ID를 가져올 수 없습니다: {channel_url}")
             return False
             
-        # 채널에서 키워드가 포함된 최신 영상 찾기 (API 사용)
-        latest_video = await find_latest_video_for_channel(channel_id, keyword, max_results=25)
+        # 채널에서 키워드가 포함된 최신 영상 찾기 (API 사용 - 50개 제한)
+        latest_video = await find_latest_video_for_channel(channel_id, keyword, max_results=50)
         
         if not latest_video:
             print(f"채널에서 키워드가 포함된 적합한 영상을 찾을 수 없습니다: {channel_url}")
@@ -186,7 +186,7 @@ async def process_channel(page: Dict[str, Any]) -> bool:
         try:
             # Gemini로 스크립트 분석 - 스크립트는 분석에만 사용하고 결과에는 포함하지 않음
             print(f"Gemini API로 스크립트 분석 시작: {latest_video['title']}")
-            analysis = await analyze_script_with_gemini(script, latest_video['title'], channel_name)
+            analysis = await analyze_script_with_gemini(script, latest_video['title'], channel_name, keyword)
             
             # 분석 결과만 사용 (원본 스크립트 제외)
             combined_content = analysis
@@ -194,7 +194,7 @@ async def process_channel(page: Dict[str, Any]) -> bool:
         except Exception as e:
             print(f"AI 분석 중 오류 발생: {str(e)}")
             # 분석 실패 시 간단한 오류 메시지 저장 (스크립트 포함하지 않음)
-            combined_content = f"# AI 분석 보고서\n\n## 분석 오류\n\n분석 과정에서 오류가 발생했습니다: {str(e)}"
+            combined_content = f"# {keyword} - 주식 종목 분석 보고서\n\n## 분석 오류\n\n분석 과정에서 오류가 발생했습니다: {str(e)}"
             print("AI 분석에 실패했습니다. 오류 메시지를 저장합니다.")
         
         # 수정된 내용으로 페이지 생성
