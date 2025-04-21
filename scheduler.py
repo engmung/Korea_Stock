@@ -68,14 +68,9 @@ async def process_channel(page: Dict[str, Any]) -> bool:
         
         print(f"Processing channel: {channel_url} with keyword: {keyword}")
         
-        # 채널 ID 가져오기
-        channel_id = await get_channel_id_from_url(channel_url)
-        if not channel_id:
-            print(f"채널 ID를 가져올 수 없습니다: {channel_url}")
-            return False
-            
-        # 채널에서 키워드가 포함된 최신 영상 찾기 (API 사용 - 50개 제한)
-        latest_video = await find_latest_video_for_channel(channel_id, keyword, max_results=50)
+        # 변경: API 대신 스크래핑으로 채널의 최신 영상 찾기
+        from youtube_scraper_utils import find_latest_video_by_scraping
+        latest_video = await find_latest_video_by_scraping(channel_url, keyword)
         
         if not latest_video:
             print(f"채널에서 키워드가 포함된 적합한 영상을 찾을 수 없습니다: {channel_url}")
@@ -106,29 +101,48 @@ async def process_channel(page: Dict[str, Any]) -> bool:
             
             return False  # 활성화 유지를 위해 False 반환
         
-        # 스크립트 가져오기
-        try:
-            # 한국어 자막 시도
-            transcript_list = YouTubeTranscriptApi.get_transcript(latest_video["video_id"], languages=["ko"])
-            script = " ".join([entry["text"] for entry in transcript_list])
-        except Exception as e:
-            try:
-                # 자동 언어 감지 시도
-                transcript_list = YouTubeTranscriptApi.get_transcript(latest_video["video_id"])
-                script = " ".join([entry["text"] for entry in transcript_list])
-            except Exception as e2:
-                print(f"자막을 가져올 수 없습니다: {str(e2)}")
-                return False
+        # 변경: 자막 가져오는 함수도 스크래핑 모듈에서 가져오기
+        from youtube_scraper_utils import get_video_transcript
         
-        if not script or len(script.strip()) < 100:
-            print(f"스크립트가 너무 짧거나 비어 있습니다: {latest_video['title']}")
+        # 스크립트 가져오기
+        script = await get_video_transcript(latest_video["video_id"])
+        
+        if not script or script.strip() == "자막이 아직 업로드되지 않았습니다." or script.startswith("스크립트를 가져올 수 없습니다"):
+            print(f"자막이 아직 업로드되지 않았습니다: {latest_video['title']}")
+            # 채널을 활성화 상태로 유지하여 다음에 다시 확인
+            print(f"채널 {channel_name}의 활성화 상태를 유지합니다 (자막 업로드 대기).")
             return False
         
-        # 영상 날짜 파싱 - 정확한 업로드 날짜로 변환
-        upload_date_datetime = datetime.fromisoformat(latest_video["upload_date"].replace("Z", "+00:00"))
+        # 영상 날짜 - 상대적 날짜 형식을 정확한 날짜로 변환
+        try:
+            from youtube_scraper_utils import parse_upload_date
+            
+            upload_date_text = latest_video.get("upload_date", "")
+            if upload_date_text:
+                # 상대적 날짜 텍스트를 실제 날짜로 변환
+                upload_date_datetime = parse_upload_date(upload_date_text)
+                print(f"업로드 날짜 텍스트 '{upload_date_text}'를 '{upload_date_datetime}'로 변환했습니다.")
+            else:
+                # 날짜 정보가 없는 경우
+                upload_date_datetime = datetime.now()
+                print("업로드 날짜 정보가 없어 현재 시간을 사용합니다.")
+            
+            # 'upload_date' 필드가 ISO 날짜 형식인 경우 (API 호출 결과)
+            if "upload_date" in latest_video and latest_video["upload_date"] and isinstance(latest_video["upload_date"], str) and "T" in latest_video["upload_date"]:
+                try:
+                    upload_date_datetime = datetime.fromisoformat(latest_video["upload_date"].replace("Z", "+00:00"))
+                    print(f"ISO 형식 날짜를 파싱했습니다: {upload_date_datetime}")
+                except Exception as e:
+                    print(f"ISO 날짜 파싱 오류: {str(e)}")
+        except Exception as e:
+            print(f"날짜 파싱 오류: {str(e)}")
+            # 오류 시 현재 시간 사용
+            upload_date_datetime = datetime.now()
         
-        # 영상 날짜 - UTC로 변환
+        # UTC 기준 날짜
         utc_upload_date = upload_date_datetime
+        # KST 시간대 정보 추가 (UTC+9)
+        kst_upload_date_str = (upload_date_datetime.replace(tzinfo=None).isoformat() + "+09:00")
 
         # 스크립트 DB에 새 페이지 생성 (속성 설정)
         properties = {
@@ -146,10 +160,10 @@ async def process_channel(page: Dict[str, Any]) -> bool:
             "URL": {
                 "url": latest_video["url"]
             },
-            # 영상 날짜 - UTC 기준으로 저장
+            # 영상 날짜 - KST 기준으로 저장
             "영상 날짜": {
                 "date": {
-                    "start": utc_upload_date.isoformat()
+                    "start": kst_upload_date_str
                 }
             },
             # 채널명 속성

@@ -107,9 +107,8 @@ async def process_video(video: Dict[str, Any], channel_name: str, keyword: str) 
             # 스크립트 가져오기
             script = await get_video_transcript(video["video_id"])
             
-            # 스크립트가 없거나 에러 메시지를 반환한 경우
-            if not script or script.startswith("스크립트를 가져올 수 없습니다"):
-                print(f"스크립트를 가져올 수 없습니다: {video['title']}")
+            if not script or script.strip() == "자막이 아직 업로드되지 않았습니다." or script.startswith("스크립트를 가져올 수 없습니다"):
+                print(f"자막이 아직 업로드되지 않았습니다: {video['title']}")
                 return False
             
             # 영상 날짜 파싱
@@ -117,6 +116,8 @@ async def process_video(video: Dict[str, Any], channel_name: str, keyword: str) 
                 published_datetime = datetime.fromisoformat(video["upload_date"].replace("Z", "+00:00"))
                 # UTC 시간 (Notion API 사용)
                 utc_published_date = published_datetime
+                # 영상 날짜 - KST 시간대 정보 추가
+                kst_published_date_str = (published_datetime.replace(tzinfo=None).isoformat() + "+09:00")
             except Exception as e:
                 print(f"날짜 파싱 오류: {str(e)}")
                 # 오류 시 현재 시간 사용
@@ -152,10 +153,10 @@ async def process_video(video: Dict[str, Any], channel_name: str, keyword: str) 
                 "URL": {
                     "url": video["url"]
                 },
-                # 영상 날짜 - UTC 시간 기준
+                # 영상 날짜 - KST 기준으로 저장
                 "영상 날짜": {
                     "date": {
-                        "start": utc_published_date.isoformat()
+                        "start": kst_published_date_str
                     }
                 },
                 # 채널명 속성
