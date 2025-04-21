@@ -70,7 +70,7 @@ async def get_recent_videos(channel_id: str, max_results: int = 500) -> List[Dic
     while len(videos) < max_results:
         video_batch, next_page_token = await get_videos_by_channel_id(
             channel_id=channel_id,
-            max_results=min(50, max_results - len(videos)),
+            max_results=min(25, max_results - len(videos)),
             page_token=next_page_token
         )
         

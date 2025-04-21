@@ -75,7 +75,7 @@ async def process_channel(page: Dict[str, Any]) -> bool:
             return False
             
         # 채널에서 키워드가 포함된 최신 영상 찾기 (API 사용)
-        latest_video = await find_latest_video_for_channel(channel_id, keyword, max_results=50)
+        latest_video = await find_latest_video_for_channel(channel_id, keyword, max_results=25)
         
         if not latest_video:
             print(f"채널에서 키워드가 포함된 적합한 영상을 찾을 수 없습니다: {channel_url}")
