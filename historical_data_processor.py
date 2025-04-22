@@ -15,9 +15,16 @@ from notion_utils import (
     REFERENCE_DB_ID,
     SCRIPT_DB_ID
 )
-from youtube_api_utils import get_channel_id_from_url, get_videos_by_channel_id, get_video_details
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_api_utils import (
+    get_channel_id_from_url, 
+    get_videos_by_channel_id, 
+    get_video_details, 
+    search_videos_in_channel,
+    get_video_transcript,
+    is_shorts
+)
 from gemini_analyzer import analyze_script_with_gemini
+from time_utils import convert_to_kst_datetime, get_notion_date_property
 
 # 환경 변수 로드
 load_dotenv()
@@ -34,66 +41,35 @@ youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 # 동시 처리를 위한 세마포어 - 최대 3개 영상 동시 처리
 VIDEO_SEMAPHORE = asyncio.Semaphore(3)
 
-async def get_video_transcript(video_id: str, max_retries: int = 3) -> str:
-    """비디오 ID로부터 자막을 가져옵니다."""
-    print(f"영상 ID에 대한 자막 가져오기: {video_id}")
-    
-    for attempt in range(max_retries):
-        try:
-            # 한국어 자막 시도
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["ko"])
-            print(f"{len(transcript_list)}개 항목의 한국어 자막을 찾았습니다")
-            return " ".join([entry["text"] for entry in transcript_list])
-        except Exception as e:
-            print(f"한국어 자막 오류 (시도 {attempt+1}/{max_retries}): {str(e)}")
-            
-            try:
-                # 자동 언어 감지 시도
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-                print(f"자동 감지 언어로 자막을 찾았습니다")
-                return " ".join([entry["text"] for entry in transcript_list])
-            except Exception as e2:
-                print(f"자동 감지 자막 오류 (시도 {attempt+1}/{max_retries}): {str(e2)}")
-                
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(2 ** attempt)
-                else:
-                    return f"스크립트를 가져올 수 없습니다: {str(e2)}"
-    
-    return "스크립트를 가져올 수 없습니다: 최대 재시도 횟수 초과"
-
-async def get_recent_videos(channel_id: str, max_results: int = 500) -> List[Dict[str, Any]]:
-    """특정 채널의 최근 영상 목록 가져오기"""
-    videos = []
+async def get_videos_with_pagination(channel_id: str, keyword: str, max_total: int = 500) -> List[Dict[str, Any]]:
+    """
+    특정 채널의 키워드가 포함된 영상을 페이지네이션을 활용하여 가져옵니다.
+    채널 ID와 키워드를 함께 사용하여 API 효율성을 높입니다.
+    """
+    all_videos = []
     next_page_token = None
     
-    while len(videos) < max_results:
-        video_batch, next_page_token = await get_videos_by_channel_id(
+    while len(all_videos) < max_total:
+        # API를 통해 채널 ID와 키워드로 함께 검색
+        videos, next_page_token = await search_videos_in_channel(
             channel_id=channel_id,
-            max_results=min(25, max_results - len(videos)),
-            page_token=next_page_token
+            keyword=keyword,
+            max_results=min(50, max_total - len(all_videos)),  # 한 번에 최대 50개, 남은 수량 고려
+            page_token=next_page_token,
+            order="date"  # 날짜순 정렬
         )
         
-        videos.extend(video_batch)
+        all_videos.extend(videos)
         
-        if not next_page_token or len(video_batch) == 0:
+        # 다음 페이지가 없거나 결과가 없으면 종료
+        if not next_page_token or len(videos) == 0:
             break
         
-        # API 제한 고려하여 약간의 딜레이 추가
-        await asyncio.sleep(0.2)
+        # API 제한 준수를 위한 딜레이
+        await asyncio.sleep(0.5)
     
-    return videos
-
-async def is_shorts(video_title: str, duration_seconds: int) -> bool:
-    """숏츠 영상인지 확인"""
-    # 제목에 '#shorts' 또는 '#쇼츠' 포함 확인 (대소문자 구분 없이)
-    shorts_keywords = ['#shorts', '#쇼츠', '#short', '#short']
-    has_shorts_keyword = any(keyword.lower() in video_title.lower() for keyword in shorts_keywords)
-    
-    # 5분(300초) 이하 영상
-    is_short_duration = duration_seconds <= 300
-    
-    return has_shorts_keyword or is_short_duration
+    print(f"채널 '{channel_id}'에서 키워드 '{keyword}'로 총 {len(all_videos)}개 영상을 찾았습니다.")
+    return all_videos
 
 async def process_video(video: Dict[str, Any], channel_name: str, keyword: str) -> bool:
     """
@@ -107,21 +83,22 @@ async def process_video(video: Dict[str, Any], channel_name: str, keyword: str) 
             # 스크립트 가져오기
             script = await get_video_transcript(video["video_id"])
             
+            # 스크립트가 없거나 아직 업로드되지 않은 경우
             if not script or script.strip() == "자막이 아직 업로드되지 않았습니다." or script.startswith("스크립트를 가져올 수 없습니다"):
                 print(f"자막이 아직 업로드되지 않았습니다: {video['title']}")
                 return False
             
-            # 영상 날짜 파싱
-            try:
-                published_datetime = datetime.fromisoformat(video["upload_date"].replace("Z", "+00:00"))
-                # UTC 시간 (Notion API 사용)
-                utc_published_date = published_datetime
-                # 영상 날짜 - KST 시간대 정보 추가
-                kst_published_date_str = (published_datetime.replace(tzinfo=None).isoformat() + "+09:00")
-            except Exception as e:
-                print(f"날짜 파싱 오류: {str(e)}")
-                # 오류 시 현재 시간 사용
-                utc_published_date = datetime.now() - timedelta(hours=9)
+            # 영상 날짜 처리를 time_utils 모듈 사용으로 변경
+            # 원본 업로드 시간 출력
+            upload_date = video.get("upload_date", "")
+            print(f"원본 업로드 시간: {upload_date}")
+            
+            # time_utils의 함수를 사용하여 Notion 형식의 날짜 속성 생성
+            upload_date_property = get_notion_date_property(upload_date)
+            
+            # 날짜 디버깅용 출력
+            kst_datetime = convert_to_kst_datetime(upload_date)
+            print(f"변환된 KST 시간: {kst_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}")
             
             # 스크립트 분석
             try:
@@ -153,12 +130,8 @@ async def process_video(video: Dict[str, Any], channel_name: str, keyword: str) 
                 "URL": {
                     "url": video["url"]
                 },
-                # 영상 날짜 - KST 기준으로 저장
-                "영상 날짜": {
-                    "date": {
-                        "start": kst_published_date_str
-                    }
-                },
+                # 영상 날짜 - time_utils를 사용한 날짜 속성
+                "영상 날짜": upload_date_property,
                 # 채널명 속성
                 "채널명": {
                     "select": {
@@ -247,30 +220,15 @@ async def process_channel_historical_data(
     
     print(f"채널 ID 가져오기 성공: {channel_id}")
     
-    # 최근 영상 가져오기 (기본값 500개)
-    videos = await get_recent_videos(channel_id, videos_per_channel)
-    if not videos:
-        print(f"채널에서 영상을 찾을 수 없습니다: {channel_name}")
-        return {
-            "channel_name": channel_name,
-            "keyword": keyword,
-            "skipped": True,
-            "reason": "no_videos_found",
-            "success_count": 0
-        }
-    
-    print(f"채널 '{channel_name}'에서 {len(videos)}개 영상을 가져왔습니다.")
-    
-    # 키워드가 포함된 영상 필터링
-    matching_videos = []
-    for video in videos:
-        if keyword.lower() in video["title"].lower():
-            matching_videos.append(video)
-    
-    print(f"키워드 '{keyword}'와 일치하는 영상 {len(matching_videos)}개를 찾았습니다.")
+    # API를 통해 채널 ID와 키워드로 함께 검색
+    matching_videos = await get_videos_with_pagination(
+        channel_id=channel_id,
+        keyword=keyword,
+        max_total=videos_per_channel
+    )
     
     if not matching_videos:
-        print(f"키워드 '{keyword}'와 일치하는 영상이 없습니다.")
+        print(f"채널 {channel_id}에서 키워드 '{keyword}'가 포함된 영상을 찾을 수 없습니다.")
         return {
             "channel_name": channel_name,
             "keyword": keyword,
@@ -278,6 +236,8 @@ async def process_channel_historical_data(
             "reason": "no_matching_videos",
             "success_count": 0
         }
+    
+    print(f"키워드 '{keyword}'와 일치하는 영상 {len(matching_videos)}개를 찾았습니다.")
     
     # 비디오 ID 목록 추출하여 상세 정보 가져오기
     video_ids = [video["video_id"] for video in matching_videos]

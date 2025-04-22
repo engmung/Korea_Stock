@@ -6,6 +6,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timedelta
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from youtube_transcript_api import YouTubeTranscriptApi
 
 # API 키 가져오기
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY", "")
@@ -85,7 +86,9 @@ async def get_videos_by_channel_id(channel_id: str, max_results: int = 50,
 
 async def search_videos_in_channel(channel_id: str, keyword: str, max_results: int = 50,
                                    published_after: Optional[str] = None,
-                                   page_token: Optional[str] = None) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+                                   published_before: Optional[str] = None,
+                                   page_token: Optional[str] = None,
+                                   order: str = "date") -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """
     채널 내에서 키워드가 포함된 영상을 검색합니다.
     
@@ -94,7 +97,9 @@ async def search_videos_in_channel(channel_id: str, keyword: str, max_results: i
         keyword: 검색할 키워드
         max_results: 페이지당 최대 결과 수
         published_after: ISO 8601 형식의 날짜 문자열 (예: 2024-01-01T00:00:00Z)
+        published_before: ISO 8601 형식의 날짜 문자열 (예: 2024-01-31T23:59:59Z)
         page_token: 다음 페이지 토큰
+        order: 결과 정렬 방식 (date, relevance, viewCount, rating 등)
         
     Returns:
         영상 리스트와 다음 페이지 토큰
@@ -109,7 +114,8 @@ async def search_videos_in_channel(channel_id: str, keyword: str, max_results: i
                 "channelId": channel_id,
                 "maxResults": max_results,
                 "q": keyword,  # 검색어
-                "type": "video"
+                "type": "video",
+                "order": order  # 정렬 방식
             }
             
             # 선택적 파라미터 추가
@@ -118,6 +124,9 @@ async def search_videos_in_channel(channel_id: str, keyword: str, max_results: i
                 
             if published_after:
                 search_params["publishedAfter"] = published_after
+                
+            if published_before:
+                search_params["publishedBefore"] = published_before
             
             # API 호출
             request = youtube.search().list(**search_params)
@@ -467,3 +476,57 @@ async def find_latest_video_for_channel(channel_id: str, keyword: str, max_resul
     
     print("적합한 영상을 찾을 수 없습니다 (모두 5분 이하 또는 없음)")
     return None  # 적합한 영상이 없는 경우
+
+async def get_video_transcript(video_id: str, max_retries: int = 3) -> str:
+    """비디오 ID로부터 자막을 가져옵니다."""
+    print(f"영상 ID에 대한 자막 가져오기: {video_id}")
+    
+    # 자막이 비활성화된 오류 문자열
+    subtitles_disabled_error = "Subtitles are disabled for this video"
+    
+    try:
+        # 한국어 자막 시도
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=["ko"])
+            print(f"{len(transcript_list)}개 항목의 한국어 자막을 찾았습니다")
+            return " ".join([entry["text"] for entry in transcript_list])
+        except Exception as e:
+            error_str = str(e)
+            
+            # 자막이 비활성화된 경우 더 이상 시도하지 않고 바로 반환
+            if subtitles_disabled_error in error_str:
+                print(f"이 영상에는 자막이 업로드되지 않았습니다: {video_id}")
+                return "자막이 아직 업로드되지 않았습니다."
+            
+            # 다른 오류인 경우 자동 감지 시도
+            print(f"한국어 자막 오류: {error_str}")
+        
+        # 자동 언어 감지 시도
+        try:
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+            print(f"자동 감지 언어로 자막을 찾았습니다")
+            return " ".join([entry["text"] for entry in transcript_list])
+        except Exception as e2:
+            error_str2 = str(e2)
+            
+            # 자막이 비활성화된 경우 더 이상 시도하지 않음
+            if subtitles_disabled_error in error_str2:
+                print(f"이 영상에는 자막이 업로드되지 않았습니다: {video_id}")
+            else:
+                print(f"자동 감지 자막 오류: {error_str2}")
+            
+            return "자막이 아직 업로드되지 않았습니다."
+    except Exception as e:
+        print(f"자막 가져오기 과정에서 예상치 못한 오류: {str(e)}")
+        return "자막이 아직 업로드되지 않았습니다."
+
+async def is_shorts(video_title: str, duration_seconds: int) -> bool:
+    """숏츠 영상인지 확인"""
+    # 제목에 '#shorts' 또는 '#쇼츠' 포함 확인 (대소문자 구분 없이)
+    shorts_keywords = ['#shorts', '#쇼츠', '#short', '#short']
+    has_shorts_keyword = any(keyword.lower() in video_title.lower() for keyword in shorts_keywords)
+    
+    # 5분(300초) 이하 영상
+    is_short_duration = duration_seconds <= 300
+    
+    return has_shorts_keyword or is_short_duration

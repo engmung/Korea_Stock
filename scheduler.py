@@ -14,9 +14,10 @@ from notion_utils import (
     REFERENCE_DB_ID, 
     SCRIPT_DB_ID
 )
-from youtube_api_utils import get_channel_id_from_url, find_latest_video_for_channel, get_video_details
-from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_api_utils import get_channel_id_from_url, is_shorts
+from youtube_scraper_utils import find_latest_video_by_scraping, get_video_transcript, parse_upload_date
 from gemini_analyzer import analyze_script_with_gemini
+from time_utils import convert_to_kst_datetime, get_notion_date_property
 
 # 글로벌 스케줄러 인스턴스
 scheduler = None
@@ -68,8 +69,7 @@ async def process_channel(page: Dict[str, Any]) -> bool:
         
         print(f"Processing channel: {channel_url} with keyword: {keyword}")
         
-        # 변경: API 대신 스크래핑으로 채널의 최신 영상 찾기
-        from youtube_scraper_utils import find_latest_video_by_scraping
+        # 스크래핑을 통해 최신 영상 찾기
         latest_video = await find_latest_video_by_scraping(channel_url, keyword)
         
         if not latest_video:
@@ -101,9 +101,6 @@ async def process_channel(page: Dict[str, Any]) -> bool:
             
             return False  # 활성화 유지를 위해 False 반환
         
-        # 변경: 자막 가져오는 함수도 스크래핑 모듈에서 가져오기
-        from youtube_scraper_utils import get_video_transcript
-        
         # 스크립트 가져오기
         script = await get_video_transcript(latest_video["video_id"])
         
@@ -113,37 +110,22 @@ async def process_channel(page: Dict[str, Any]) -> bool:
             print(f"채널 {channel_name}의 활성화 상태를 유지합니다 (자막 업로드 대기).")
             return False
         
-        # 영상 날짜 - 상대적 날짜 형식을 정확한 날짜로 변환
-        try:
-            from youtube_scraper_utils import parse_upload_date
-            
-            upload_date_text = latest_video.get("upload_date", "")
-            if upload_date_text:
-                # 상대적 날짜 텍스트를 실제 날짜로 변환
-                upload_date_datetime = parse_upload_date(upload_date_text)
-                print(f"업로드 날짜 텍스트 '{upload_date_text}'를 '{upload_date_datetime}'로 변환했습니다.")
-            else:
-                # 날짜 정보가 없는 경우
-                upload_date_datetime = datetime.now()
-                print("업로드 날짜 정보가 없어 현재 시간을 사용합니다.")
-            
-            # 'upload_date' 필드가 ISO 날짜 형식인 경우 (API 호출 결과)
-            if "upload_date" in latest_video and latest_video["upload_date"] and isinstance(latest_video["upload_date"], str) and "T" in latest_video["upload_date"]:
-                try:
-                    upload_date_datetime = datetime.fromisoformat(latest_video["upload_date"].replace("Z", "+00:00"))
-                    print(f"ISO 형식 날짜를 파싱했습니다: {upload_date_datetime}")
-                except Exception as e:
-                    print(f"ISO 날짜 파싱 오류: {str(e)}")
-        except Exception as e:
-            print(f"날짜 파싱 오류: {str(e)}")
-            # 오류 시 현재 시간 사용
-            upload_date_datetime = datetime.now()
+        # 업로드 날짜/시간 변환 - 상대적 시간 텍스트를 실제 날짜로 변환
+        upload_time_text = latest_video.get("upload_date", "")
+        print(f"원본 업로드 시간 텍스트: {upload_time_text}")
         
-        # UTC 기준 날짜
-        utc_upload_date = upload_date_datetime
-        # KST 시간대 정보 추가 (UTC+9)
-        kst_upload_date_str = (upload_date_datetime.replace(tzinfo=None).isoformat() + "+09:00")
-
+        # 상대적 시간 텍스트를 datetime 객체로 변환 (이미 KST 시간대 정보 포함)
+        upload_datetime = parse_upload_date(upload_time_text)
+        print(f"변환된 업로드 시간(datetime): {upload_datetime}")
+        
+        # 이미 KST 시간대가 포함된 datetime을 Notion 날짜 속성으로 직접 변환
+        # KST 중복 변환을 방지하기 위해 datetime 객체를 직접 사용
+        upload_date_property = {
+            "date": {
+                "start": upload_datetime.isoformat()
+            }
+        }
+        
         # 스크립트 DB에 새 페이지 생성 (속성 설정)
         properties = {
             # 제목은 참고용 DB의 키워드 사용 (중요: 프로그램 제목으로 사용)
@@ -160,12 +142,8 @@ async def process_channel(page: Dict[str, Any]) -> bool:
             "URL": {
                 "url": latest_video["url"]
             },
-            # 영상 날짜 - KST 기준으로 저장
-            "영상 날짜": {
-                "date": {
-                    "start": kst_upload_date_str
-                }
-            },
+            # 영상 날짜 - 상대적 시간을 변환한 날짜 속성
+            "영상 날짜": upload_date_property,
             # 채널명 속성
             "채널명": {
                 "select": {
@@ -192,10 +170,10 @@ async def process_channel(page: Dict[str, Any]) -> bool:
             }
         }
         
-        # 디버깅 정보 로깅
+        # 디버깅 정보 로깅 (KST 중복 변환 없이 직접 사용)
         print(f"Creating page for video: {latest_video['title']}")
         print(f"Keyword: {keyword}, Channel: {channel_name}")
-        print(f"Upload date: {upload_date_datetime.strftime('%Y-%m-%d')}")
+        print(f"Upload date (KST): {upload_datetime.strftime('%Y-%m-%d %H:%M:%S %Z')}")
         
         try:
             # Gemini로 스크립트 분석 - 스크립트는 분석에만 사용하고 결과에는 포함하지 않음
@@ -349,6 +327,80 @@ def run_async_task(coroutine):
         return loop.run_until_complete(coroutine)
     finally:
         loop.close()
+
+async def process_channels_without_time_check() -> None:
+    """
+    활성화된 모든 채널을 처리합니다. 시간대 설정과 무관하게 실행됩니다.
+    이 함수는 /sync-channels 엔드포인트에서 호출됩니다.
+    """
+    print("시간대 무관 채널 처리 시작 - 활성화된 모든 채널 대상")
+    
+    try:
+        # 참고용 DB의 모든 채널 가져오기
+        reference_pages = await query_notion_database(REFERENCE_DB_ID)
+        print(f"참고용 DB에서 {len(reference_pages)}개의 채널을 가져왔습니다.")
+        
+        # 활성화된 채널만 선택 (시간대 체크 안 함)
+        active_channels = []
+        
+        for page in reference_pages:
+            properties = page.get("properties", {})
+            
+            # 활성화 상태 확인
+            is_active = False
+            active_property = properties.get("활성화", {})
+            if "checkbox" in active_property:
+                is_active = active_property["checkbox"]
+            
+            if is_active:
+                channel_name = "기타"
+                if "채널명" in properties and "select" in properties["채널명"] and properties["채널명"]["select"]:
+                    channel_name = properties["채널명"]["select"]["name"]
+                
+                print(f"채널 '{channel_name}'은 활성화되어 있어 처리 대상입니다.")
+                active_channels.append(page)
+        
+        print(f"처리할 활성화된 채널 {len(active_channels)}개를 찾았습니다.")
+        
+        if not active_channels:
+            print(f"처리할 활성화된 채널이 없습니다.")
+            return
+        
+        # 채널 처리 - API 제한 고려하여 순차적으로 처리
+        success_count = 0
+        
+        for index, channel_page in enumerate(active_channels):
+            try:
+                channel_name = "Unknown"
+                properties = channel_page.get("properties", {})
+                if "채널명" in properties and "select" in properties["채널명"] and properties["채널명"]["select"]:
+                    channel_name = properties["채널명"]["select"]["name"]
+                    
+                print(f"채널 처리 시작 ({index+1}/{len(active_channels)}): {channel_name}")
+                success = await process_channel(channel_page)
+                
+                if success:
+                    success_count += 1
+                    print(f"채널 처리 성공: {channel_name}")
+                else:
+                    print(f"채널 처리 실패 또는 스킵: {channel_name}")
+                    
+                # 다음 채널 처리 전 대기
+                # 마지막 항목이 아니면 대기
+                if index < len(active_channels) - 1:
+                    print(f"API 제한 준수를 위해 2초 대기 중...")
+                    await asyncio.sleep(2)
+                    
+            except Exception as e:
+                print(f"채널 처리 중 예외 발생: {str(e)}")
+                # 다음 채널 처리 전 대기
+                if index < len(active_channels) - 1:
+                    print(f"오류 후 API 제한 준수를 위해 2초 대기 중...")
+                    await asyncio.sleep(2)
+        
+        print(f"처리 완료: {success_count}/{len(active_channels)} 채널 성공")
+    except Exception as e:
+        print(f"process_channels_without_time_check 실행 중 오류: {str(e)}")
 
 def setup_scheduler() -> AsyncIOScheduler:
     """스케줄러를 설정하고 작업을 예약합니다."""

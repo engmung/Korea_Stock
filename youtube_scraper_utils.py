@@ -386,13 +386,19 @@ def parse_upload_date(upload_time_text: str) -> datetime:
     """
     YouTube 업로드 시간 텍스트를 실제 날짜로 변환합니다.
     예: "3일 전", "5시간 전" 등을 실제 날짜로 변환
+    반환된 datetime에는 KST 시간대 정보가 포함됨
     """
-    now = datetime.now()
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo("Asia/Seoul"))  # 명시적으로 KST 시간대 사용
     
     if not upload_time_text:
         return now
     
     try:
+        # "스트리밍 시간:" 접두어 제거
+        if "스트리밍 시간:" in upload_time_text:
+            upload_time_text = upload_time_text.replace("스트리밍 시간:", "").strip()
+        
         # 숫자 추출
         number_match = re.search(r'(\d+)', upload_time_text)
         if not number_match:
@@ -418,7 +424,7 @@ def parse_upload_date(upload_time_text: str) -> datetime:
             date_match = re.search(r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일', upload_time_text)
             if date_match:
                 year, month, day = map(int, date_match.groups())
-                return datetime(year, month, day)
+                return datetime(year, month, day, tzinfo=ZoneInfo("Asia/Seoul"))
             
             # 영어 날짜 형식 처리 (예: "Mar 13, 2024")
             eng_date_match = re.search(r'([A-Za-z]{3})\s*(\d{1,2}),?\s*(\d{4})', upload_time_text)
@@ -429,7 +435,7 @@ def parse_upload_date(upload_time_text: str) -> datetime:
                     'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12
                 }
                 month = month_dict.get(month_str, 1)
-                return datetime(int(year), month, int(day))
+                return datetime(int(year), int(day), month, tzinfo=ZoneInfo("Asia/Seoul"))
     except Exception as e:
         logger.error(f"날짜 파싱 오류: {str(e)}")
     

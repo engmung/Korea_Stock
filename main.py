@@ -1,6 +1,4 @@
 import os
-import logging
-from datetime import datetime
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,27 +8,14 @@ from dotenv import load_dotenv
 # 환경 변수 로드
 load_dotenv()
 
-# 로깅 설정
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-# 모듈화된 컴포넌트 임포트 - 스크래핑 모듈 추가
-from scheduler import setup_scheduler, simulate_scheduler_at_time, process_channels_by_setting
+# 모듈화된 컴포넌트 임포트
+from scheduler import setup_scheduler, simulate_scheduler_at_time, process_channels_without_time_check
 from notion_utils import (
     query_notion_database,
     REFERENCE_DB_ID, 
     SCRIPT_DB_ID
 )
 from historical_data_processor import process_all_channels_historical_data
-# 웹 스크래핑 모듈 추가
-import youtube_scraper_utils
-
-# 중요: 의존성 확인
-if not os.path.isfile("youtube_scraper_utils.py"):
-    logger.error("youtube_scraper_utils.py 파일이 없습니다. 스케줄러가 정상 작동하지 않을 수 있습니다.")
 
 app = FastAPI(title="투자 의사결정 지원 시스템")
 
@@ -73,19 +58,20 @@ async def root():
 
 @app.post("/sync-channels", response_model=NotionSyncResponse)
 async def sync_channels(background_tasks: BackgroundTasks):
-    """모든 채널에 대해 콘텐츠를 추출하고 분석합니다."""
+    """모든 활성화된 채널에 대해 콘텐츠를 추출하고 분석합니다. 시간대와 무관하게 처리합니다."""
     try:
-        # 백그라운드 작업으로 실행
-        background_tasks.add_task(process_channels_by_setting)
-        return {"status": "processing", "message": "동기화 작업이 시작되었습니다. 완료까지 시간이 걸릴 수 있습니다."}
+        # 백그라운드 작업으로 실행 - process_channels_without_time_check 호출
+        background_tasks.add_task(process_channels_without_time_check)
+        return {"status": "processing", "message": "동기화 작업이 시작되었습니다. 활성화된 모든 채널의 최근 영상을 처리합니다. 완료까지 시간이 걸릴 수 있습니다."}
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"채널 동기화 중 오류가 발생했습니다: {str(e)}")
 
 @app.post("/run-now")
 async def run_now():
-    """지금 바로 채널 처리 작업을 실행합니다."""
+    """지금 바로 채널 처리 작업을 실행합니다. 시간대 설정에 따라 대상 채널 필터링."""
     try:
+        # 이 함수는 시간대에 따라 필터링하는 기존 방식 유지
         await process_channels_by_setting()
         return {"status": "success", "message": "채널 처리 작업이 실행되었습니다."}
     except Exception as e:
@@ -268,16 +254,7 @@ async def process_historical_data(background_tasks: BackgroundTasks, request: Hi
 @app.on_event("startup")
 async def startup_event():
     """애플리케이션 시작 시 스케줄러 설정"""
-    try:
-        # 스크래핑 모듈 존재 확인
-        if not os.path.isfile("youtube_scraper_utils.py"):
-            logger.warning("youtube_scraper_utils.py 파일이 없습니다. 웹 스크래핑 기능이 작동하지 않을 수 있습니다.")
-        
-        setup_scheduler()
-        logger.info("스케줄러가 정상적으로 설정되었습니다.")
-    except Exception as e:
-        logger.error(f"스케줄러 설정 중 오류 발생: {str(e)}")
-        # 오류가 있어도 앱은 시작됨
+    setup_scheduler()
 
 if __name__ == "__main__":
     import uvicorn
