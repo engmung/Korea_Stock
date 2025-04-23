@@ -402,6 +402,85 @@ async def process_channels_without_time_check() -> None:
     except Exception as e:
         print(f"process_channels_without_time_check 실행 중 오류: {str(e)}")
 
+async def process_all_channels_every_two_hours() -> None:
+    """
+    활성화 상태나 시간 설정에 관계없이 모든 채널을 처리합니다.
+    홀수 시간마다 실행됩니다.
+    성공적으로 처리된 채널은 비활성화 상태로 변경됩니다.
+    """
+    current_hour = datetime.now().hour
+    print(f"홀수 시간 주기적 실행 - 현재 시간: {current_hour}시")
+    
+    try:
+        # 참고용 DB의 모든 채널 가져오기
+        reference_pages = await query_notion_database(REFERENCE_DB_ID)
+        print(f"참고용 DB에서 {len(reference_pages)}개의 채널을 가져왔습니다.")
+        
+        if not reference_pages:
+            print("참고용 DB에서 채널을 찾을 수 없습니다.")
+            return
+        
+        # 채널 처리 - API 제한 고려하여 순차적으로 처리
+        success_count = 0
+        
+        for index, channel_page in enumerate(reference_pages):
+            try:
+                channel_name = "Unknown"
+                properties = channel_page.get("properties", {})
+                if "채널명" in properties and "select" in properties["채널명"] and properties["채널명"]["select"]:
+                    channel_name = properties["채널명"]["select"]["name"]
+                
+                page_id = channel_page.get("id")
+                print(f"채널 처리 시작 ({index+1}/{len(reference_pages)}): {channel_name}")
+                
+                # 처리 전에 항상 활성화 상태로 변경
+                original_active_state = False
+                active_property = properties.get("활성화", {})
+                if "checkbox" in active_property:
+                    original_active_state = active_property["checkbox"]
+                
+                if not original_active_state:
+                    await update_notion_page(page_id, {
+                        "활성화": {"checkbox": True}
+                    })
+                    print(f"채널 {channel_name}을 임시로 활성화 상태로 변경했습니다.")
+                
+                # 채널 처리
+                success = await process_channel(channel_page)
+                
+                if success:
+                    # 처리가 성공한 경우: 활성화 상태와 관계없이 비활성화로 변경
+                    await update_notion_page(page_id, {
+                        "활성화": {"checkbox": False}
+                    })
+                    print(f"채널 처리 성공: {channel_name} - 비활성화 상태로 변경했습니다.")
+                    success_count += 1
+                else:
+                    # 처리가 실패한 경우: 원래 상태로 복원
+                    if not original_active_state:
+                        await update_notion_page(page_id, {
+                            "활성화": {"checkbox": False}
+                        })
+                        print(f"채널 처리 실패 또는 스킵: {channel_name} - 원래의 비활성화 상태로 복원했습니다.")
+                    else:
+                        print(f"채널 처리 실패 또는 스킵: {channel_name} - 활성화 상태 유지")
+                
+                # 다음 채널 처리 전 대기
+                if index < len(reference_pages) - 1:
+                    print(f"API 제한 준수를 위해 2초 대기 중...")
+                    await asyncio.sleep(2)
+                    
+            except Exception as e:
+                print(f"채널 처리 중 예외 발생: {str(e)}")
+                # 다음 채널 처리 전 대기
+                if index < len(reference_pages) - 1:
+                    print(f"오류 후 API 제한 준수를 위해 2초 대기 중...")
+                    await asyncio.sleep(2)
+        
+        print(f"처리 완료: {success_count}/{len(reference_pages)} 채널 성공")
+    except Exception as e:
+        print(f"process_all_channels_every_two_hours 실행 중 오류: {str(e)}")
+
 def setup_scheduler() -> AsyncIOScheduler:
     """스케줄러를 설정하고 작업을 예약합니다."""
     global scheduler
@@ -419,6 +498,18 @@ def setup_scheduler() -> AsyncIOScheduler:
         replace_existing=True
     )
     
+    # 홀수 시간마다 모든 채널 처리 (1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23시)
+    for hour in [1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23]:
+        scheduler.add_job(
+            lambda: run_async_task(process_all_channels_every_two_hours()),
+            CronTrigger(hour=hour, minute=0),
+            id=f"process_all_channels_{hour}",
+            replace_existing=True
+        )
+    
+    # 기존 매시간 정각 작업은 제거하거나 주석 처리 (선택사항)
+    # 기존 작업을 유지하려면 아래 코드를 주석 처리하지 마세요
+    """
     # 매시간 정각에 작업 실행 (0-23시)
     for hour in range(24):
         # 현재 시간을 인자로 전달하여 비동기 작업을 동기적으로 실행
@@ -428,6 +519,7 @@ def setup_scheduler() -> AsyncIOScheduler:
             id=f"process_channels_{hour}",
             replace_existing=True
         )
+    """
     
     # 스케줄러 시작
     scheduler.start()
