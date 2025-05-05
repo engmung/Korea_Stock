@@ -88,6 +88,9 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
 """
                     
                     generate_content_config = types.GenerateContentConfig(
+                        temperature=0,  # 결정적인 출력을 위해 0으로 설정
+                        top_p=0.1,      # 가장 확률이 높은 토큰들만 고려
+                        top_k=64,       # 선택 후보 토큰 수는 유지
                         response_mime_type="text/plain",
                         system_instruction=[types.Part.from_text(text=system_instruction)],
                     )

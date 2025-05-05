@@ -15,7 +15,6 @@ from notion_utils import (
     REFERENCE_DB_ID, 
     SCRIPT_DB_ID
 )
-from historical_data_processor import process_all_channels_historical_data
 
 app = FastAPI(title="투자 의사결정 지원 시스템")
 
@@ -46,12 +45,6 @@ class SimulateRequest(BaseModel):
         description="실제 채널 처리 실행 여부 (True: 시뮬레이션만, False: 실제 실행)"
     )
 
-class HistoricalDataRequest(BaseModel):
-    videos_per_channel: int = 500
-    process_limit_per_channel: int = 20
-    target_programs: Optional[List[str]] = None
-    concurrent_channels: int = 3
-
 @app.get("/")
 async def root():
     return {"message": "투자 의사결정 지원 시스템 API"}
@@ -66,16 +59,6 @@ async def sync_channels(background_tasks: BackgroundTasks):
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"채널 동기화 중 오류가 발생했습니다: {str(e)}")
-
-@app.post("/run-now")
-async def run_now():
-    """지금 바로 채널 처리 작업을 실행합니다. 시간대 설정에 따라 대상 채널 필터링."""
-    try:
-        # 이 함수는 시간대에 따라 필터링하는 기존 방식 유지
-        await process_channels_by_setting()
-        return {"status": "success", "message": "채널 처리 작업이 실행되었습니다."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"즉시 실행 중 오류가 발생했습니다: {str(e)}")
 
 @app.post("/simulate", description="특정 시간 설정에 대한 작업 시뮬레이션. 시간을 지정하여 해당 시간에 어떤 채널이 처리될지 확인하거나 실제로 처리합니다.")
 async def simulate(request: SimulateRequest):
@@ -209,47 +192,6 @@ async def get_script_db():
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"스크립트 DB 조회 중 오류가 발생했습니다: {str(e)}")
-
-@app.post("/process-historical-data")
-async def process_historical_data(background_tasks: BackgroundTasks, request: HistoricalDataRequest):
-    """
-    과거 데이터를 처리하여 분석 보고서를 Notion DB에 저장합니다
-    YouTube Data API를 활용하여 채널의 과거 영상을 검색하고 분석합니다
-    
-    - videos_per_channel: 각 채널에서 가져올 최대 영상 수 (기본값: 500)
-    - process_limit_per_channel: 각 채널에서 실제로 처리할 최대 영상 수 (기본값: 20)
-    - target_programs: 특정 프로그램 제목 목록 (지정 시 해당 프로그램만 처리)
-    - concurrent_channels: 동시에 처리할 채널 수 (기본값: 3)
-    """
-    try:
-        # 병렬 처리 설정 검증
-        concurrent_channels = max(1, min(request.concurrent_channels, 5))  # 1-5 사이로 제한
-        
-        # 백그라운드 작업으로 실행
-        def run_historical_processor():
-            import asyncio
-            asyncio.run(process_all_channels_historical_data(
-                videos_per_channel=request.videos_per_channel,
-                process_limit_per_channel=request.process_limit_per_channel,
-                target_programs=request.target_programs,
-                concurrent_channels=concurrent_channels
-            ))
-        
-        background_tasks.add_task(run_historical_processor)
-        
-        return {
-            "status": "processing", 
-            "message": "과거 데이터 처리가 백그라운드에서 시작되었습니다. 완료까지 시간이 걸릴 수 있습니다.",
-            "config": {
-                "videos_per_channel": request.videos_per_channel,
-                "process_limit_per_channel": request.process_limit_per_channel,
-                "target_programs": request.target_programs,
-                "concurrent_channels": concurrent_channels
-            }
-        }
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"과거 데이터 처리 시작 중 오류가 발생했습니다: {str(e)}")
 
 @app.on_event("startup")
 async def startup_event():
