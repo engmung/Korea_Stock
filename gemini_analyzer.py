@@ -29,7 +29,7 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
             logger.error("GEMINI_API_KEY 환경 변수가 설정되지 않았습니다.")
-            return f"# {program_name} - 주식 종목 분석 보고서\n\n## 분석 오류\n\nGEMINI_API_KEY 환경 변수가 설정되지 않았습니다."
+            return f"# [분석 오류] {program_name} - 주식 종목 분석 보고서\n\n## 오류 내용\n\nGEMINI_API_KEY 환경 변수가 설정되지 않았습니다."
         
         # 프롬프트 작성 - 주식 종목 분석에 특화된 프롬프트
         prompt = f"""# 주식 종목 분석 요청
@@ -61,7 +61,7 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
                     ]
                     
                     # 시스템 지시사항 설정 - 종목 분석에 특화
-                    system_instruction = f"""당신은 투자 전문가로서 주식 종목 분석을 담당합니다. 주어진 스크립트에서 매수 가치가 있는 종목들과 주의해야 할 종목들을 추출하여 정리해주세요.
+                    system_instruction = f"""당신은 투자 전문가로서 한국주식 종목 분석을 담당합니다. 주어진 스크립트에서 매수 가치가 있는 종목들과 주의해야 할 종목들을 추출하여 정리해주세요.
 
 다음 지침을 반드시 따르세요:
 
@@ -113,14 +113,14 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
                     return response_text
                 except Exception as e:
                     logger.error(f"Gemini 함수 내 오류: {str(e)}")
-                    return f"# {program_name} - 주식 종목 분석 보고서\n\n## Gemini API 오류\n\n{str(e)}"
+                    return f"# [분석 오류] {program_name} - 주식 종목 분석 보고서\n\n## 오류 내용\n\nGemini API 호출 중 오류가 발생했습니다: {str(e)}"
             
             # 비동기적으로 API 호출 실행
             try:
                 response_text = await asyncio.to_thread(call_gemini)
             except Exception as e:
                 logger.error(f"asyncio.to_thread 오류: {str(e)}")
-                return f"# {program_name} - 주식 종목 분석 보고서\n\n## 분석 오류\n\nasyncio.to_thread 실행 중 오류가 발생했습니다: {str(e)}"
+                return f"# [분석 오류] {program_name} - 주식 종목 분석 보고서\n\n## 오류 내용\n\nasyncio.to_thread 실행 중 오류가 발생했습니다: {str(e)}"
             
             # API 호출 후 경과 시간 계산
             elapsed_time = asyncio.get_event_loop().time() - start_time
@@ -132,6 +132,11 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
                 await asyncio.sleep(wait_time)
             
             if response_text:
+                # 오류 메시지가 포함되었는지 확인
+                if "분석 오류" in response_text or "오류 내용" in response_text:
+                    logger.error("Gemini 분석 오류 발생")
+                    return response_text
+                
                 logger.info("Gemini 분석 완료")
                 
                 # 응답이 마크다운 형식인지 확인하고 수정
@@ -144,11 +149,11 @@ async def analyze_script_with_gemini(script: str, video_title: str, channel_name
                 return response_text
             else:
                 logger.error("Gemini가 빈 응답을 반환했습니다.")
-                return f"# {program_name} - 주식 종목 분석 보고서\n\n## 분석 오류\n\nGemini API가 응답을 생성하지 못했습니다."
+                return f"# [분석 오류] {program_name} - 주식 종목 분석 보고서\n\n## 오류 내용\n\nGemini API가 응답을 생성하지 못했습니다."
             
     except Exception as e:
         logger.error(f"Gemini API 호출 중 오류 발생: {str(e)}")
-        return f"# {program_name} - 주식 종목 분석 보고서\n\n## 분석 오류\n\nGemini API 호출 중 오류가 발생했습니다: {str(e)}"
+        return f"# [분석 오류] {program_name} - 주식 종목 분석 보고서\n\n## 오류 내용\n\nGemini API 호출 중 오류가 발생했습니다: {str(e)}"
 
 
 def clean_markdown_format(text: str) -> str:
