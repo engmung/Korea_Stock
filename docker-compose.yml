@@ -1,19 +1,18 @@
-version: "3"
-
 services:
-  investment-advisor-api:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  stock-agent:
+    build: .
+    container_name: korea-stock-agent
+    restart: unless-stopped
     ports:
       - "8003:8003"
+    env_file:
+      - .env
     volumes:
-      - .:/app
-      - ./.env:/app/.env
+      - ./logs:/app/logs
     environment:
-      - PYTHONUNBUFFERED=1
       - TZ=Asia/Seoul
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - NOTION_API_KEY=${NOTION_API_KEY}
-      - YOUTUBE_API_KEY=${YOUTUBE_API_KEY}
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8003/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

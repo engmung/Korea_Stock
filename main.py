@@ -1,22 +1,110 @@
+"""
+투자 의사결정 지원 시스템 — FastAPI 서버 + 스케줄러
+"""
+import logging
 import os
-from typing import Dict, Any, List, Optional
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from logging.handlers import TimedRotatingFileHandler
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
-# 환경 변수 로드
-load_dotenv()
+from config.settings import get_settings
+from agents import channel_monitor, filter_agent, stock_extract_agent, normalize_agent
+from db.channels import get_all_channels
+from db.video_queue import get_all_videos
+from db.stock_opinions import get_all_opinions
 
-# 모듈화된 컴포넌트 임포트
-from scheduler import setup_scheduler, simulate_scheduler_at_time, process_channels_without_time_check
-from notion_utils import (
-    query_notion_database,
-    REFERENCE_DB_ID, 
-    SCRIPT_DB_ID
+# ──────────────────────────────────────────────
+# 로깅 설정 (콘솔 + 파일)
+# ──────────────────────────────────────────────
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+date_format = "%Y-%m-%d %H:%M:%S"
+
+# 콘솔 핸들러
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
+
+# 파일 핸들러 (매일 자정 로테이션, 7일 보관)
+file_handler = TimedRotatingFileHandler(
+    os.path.join(LOG_DIR, "app.log"),
+    when="midnight",
+    interval=1,
+    backupCount=7,
+    encoding="utf-8",
 )
+file_handler.setFormatter(logging.Formatter(log_format, datefmt=date_format))
 
-app = FastAPI(title="투자 의사결정 지원 시스템")
+logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
+logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────
+# 스케줄러
+# ──────────────────────────────────────────────
+scheduler = AsyncIOScheduler(timezone="Asia/Seoul")
+
+
+def setup_scheduler():
+    """설정 기반으로 4개 에이전트를 스케줄러에 등록합니다."""
+    s = get_settings()
+
+    # ① 채널 모니터 — 10분 주기
+    scheduler.add_job(
+        channel_monitor.run,
+        IntervalTrigger(minutes=s.scheduler.monitor_interval_minutes),
+        id="channel_monitor",
+        replace_existing=True,
+    )
+
+    # ② 필터링 에이전트 — 매시 정각, (시간대 체크는 에이전트 내부에서)
+    scheduler.add_job(
+        filter_agent.run,
+        IntervalTrigger(minutes=s.scheduler.filter_interval_minutes),
+        id="filter_agent",
+        replace_existing=True,
+    )
+
+    # ③ 종목 추출 에이전트 — 5분 주기 (필터 완료 후 바로 실행되도록)
+    scheduler.add_job(
+        stock_extract_agent.run,
+        IntervalTrigger(minutes=s.scheduler.report_interval_minutes),
+        id="stock_extract_agent",
+        replace_existing=True,
+    )
+
+    # ④ 정규화 에이전트 — 10분 주기 (트리거 조건은 내부 체크)
+    scheduler.add_job(
+        normalize_agent.run,
+        IntervalTrigger(minutes=10),
+        id="normalize_agent",
+        replace_existing=True,
+    )
+
+    scheduler.start()
+    logger.info("스케줄러 시작 완료")
+    logger.info(f"  채널 모니터: {s.scheduler.monitor_interval_minutes}분 주기")
+    logger.info(f"  필터링: {s.scheduler.filter_interval_minutes}분 주기 ({s.scheduler.filter_active_hour_start}~{s.scheduler.filter_active_hour_end}시)")
+    logger.info(f"  종목 추출: {s.scheduler.report_interval_minutes}분 주기")
+    logger.info(f"  정규화: 10분 주기 (배치 {s.scheduler.normalize_batch_size}개 또는 {s.scheduler.normalize_interval_minutes}분)")
+
+
+# ──────────────────────────────────────────────
+# FastAPI 앱
+# ──────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    setup_scheduler()
+    yield
+    scheduler.shutdown()
+
+
+app = FastAPI(title="투자 의사결정 지원 시스템", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -26,178 +114,84 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class NotionSyncRequest(BaseModel):
-    pass  # 빈 요청 본문, 단순히 동기화 작업 트리거용
 
-class NotionSyncResponse(BaseModel):
-    status: str
-    message: str
-
-class SimulateRequest(BaseModel):
-    time_setting: int = Field(
-        9, 
-        description="시뮬레이션할 시간 설정 (0-23 사이의 정수)", 
-        ge=0, 
-        le=23
-    )
-    simulate_only: bool = Field(
-        True, 
-        description="실제 채널 처리 실행 여부 (True: 시뮬레이션만, False: 실제 실행)"
-    )
-
+# ──────────────────────────────────────────────
+# 조회 엔드포인트
+# ──────────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {"message": "투자 의사결정 지원 시스템 API"}
+    s = get_settings()
+    return {
+        "message": "투자 의사결정 지원 시스템 API",
+        "llm_provider": s.llm.provider,
+        "llm_model": s.llm.model,
+    }
 
-@app.post("/sync-channels", response_model=NotionSyncResponse)
-async def sync_channels(background_tasks: BackgroundTasks):
-    """모든 활성화된 채널에 대해 콘텐츠를 추출하고 분석합니다. 시간대와 무관하게 처리합니다."""
-    try:
-        # 백그라운드 작업으로 실행 - process_channels_without_time_check 호출
-        background_tasks.add_task(process_channels_without_time_check)
-        return {"status": "processing", "message": "동기화 작업이 시작되었습니다. 활성화된 모든 채널의 최근 영상을 처리합니다. 완료까지 시간이 걸릴 수 있습니다."}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"채널 동기화 중 오류가 발생했습니다: {str(e)}")
 
-@app.post("/simulate", description="특정 시간 설정에 대한 작업 시뮬레이션. 시간을 지정하여 해당 시간에 어떤 채널이 처리될지 확인하거나 실제로 처리합니다.")
-async def simulate(request: SimulateRequest):
-    """특정 시간 설정에 대한 작업 시뮬레이션"""
-    try:
-        time_setting = request.time_setting
-        simulate_only = request.simulate_only
-        
-        result = await simulate_scheduler_at_time(time_setting, simulate_only)
-        return {
-            "status": "success", 
-            "message": f"시간 {time_setting}시 설정에 대한 {'시뮬레이션' if simulate_only else '실행'} 완료",
-            "result": result
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"시뮬레이션 중 오류가 발생했습니다: {str(e)}")
+@app.get("/channels")
+async def list_channels():
+    channels = await get_all_channels()
+    return {"status": "success", "channels": channels, "total": len(channels)}
 
-@app.get("/reference-db")
-async def get_reference_db():
-    """참고용 DB의 모든 채널 정보 조회"""
-    try:
-        pages = await query_notion_database(REFERENCE_DB_ID)
-        
-        channels = []
-        for page in pages:
-            properties = page.get("properties", {})
-            
-            # 필요한 속성 추출
-            channel_info = {
-                "id": page.get("id"),
-                "title": "",
-                "url": "",
-                "channel_name": "",
-                "active": False,
-                "time": 9,
-                "content_type": "",
-                "investment_style": []
-            }
-            
-            # 제목
-            if "제목" in properties and "title" in properties["제목"] and properties["제목"]["title"]:
-                channel_info["title"] = properties["제목"]["title"][0]["plain_text"]
-            
-            # URL
-            if "URL" in properties and "url" in properties["URL"]:
-                channel_info["url"] = properties["URL"]["url"]
-            
-            # 채널명
-            if "채널명" in properties and "select" in properties["채널명"] and properties["채널명"]["select"]:
-                channel_info["channel_name"] = properties["채널명"]["select"]["name"]
-            
-            # 활성화
-            if "활성화" in properties and "checkbox" in properties["활성화"]:
-                channel_info["active"] = properties["활성화"]["checkbox"]
-            
-            # 시간
-            if "시간" in properties and "number" in properties["시간"] and properties["시간"]["number"] is not None:
-                channel_info["time"] = properties["시간"]["number"]
-            
-            # 콘텐츠 유형
-            if "콘텐츠 유형" in properties and "select" in properties["콘텐츠 유형"] and properties["콘텐츠 유형"]["select"]:
-                channel_info["content_type"] = properties["콘텐츠 유형"]["select"]["name"]
-            
-            # 투자 스타일
-            if "투자 스타일" in properties and "multi_select" in properties["투자 스타일"]:
-                channel_info["investment_style"] = [item["name"] for item in properties["투자 스타일"]["multi_select"]]
-            
-            channels.append(channel_info)
-        
-        return {"status": "success", "channels": channels, "total": len(channels)}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"참고용 DB 조회 중 오류가 발생했습니다: {str(e)}")
 
-@app.get("/script-db")
-async def get_script_db():
-    """스크립트 DB의 모든 분석 보고서 정보 조회"""
-    try:
-        pages = await query_notion_database(SCRIPT_DB_ID)
-        
-        scripts = []
-        for page in pages:
-            properties = page.get("properties", {})
-            
-            # 필요한 속성 추출
-            script_info = {
-                "id": page.get("id"),
-                "title": "",
-                "url": "",
-                "video_date": "",
-                "channel_name": "",
-                "video_length": "",
-                "citation_count": 0,
-                "presenters": []
-            }
-            
-            # 제목
-            if "제목" in properties and "title" in properties["제목"] and properties["제목"]["title"]:
-                script_info["title"] = properties["제목"]["title"][0]["plain_text"]
-            
-            # URL
-            if "URL" in properties and "url" in properties["URL"]:
-                script_info["url"] = properties["URL"]["url"]
-            
-            # 영상 날짜
-            if "영상 날짜" in properties and "date" in properties["영상 날짜"] and properties["영상 날짜"]["date"]:
-                script_info["video_date"] = properties["영상 날짜"]["date"]["start"]
-            
-            # 채널명
-            if "채널명" in properties and "select" in properties["채널명"] and properties["채널명"]["select"]:
-                script_info["channel_name"] = properties["채널명"]["select"]["name"]
-            
-            # 영상 길이
-            if "영상 길이" in properties and "rich_text" in properties["영상 길이"] and properties["영상 길이"]["rich_text"]:
-                script_info["video_length"] = properties["영상 길이"]["rich_text"][0]["plain_text"]
-            
-            # 인용 횟수
-            if "인용 횟수" in properties and "number" in properties["인용 횟수"]:
-                script_info["citation_count"] = properties["인용 횟수"]["number"] or 0
-            
-            # 출연자
-            if "출연자" in properties and "multi_select" in properties["출연자"]:
-                script_info["presenters"] = [item["name"] for item in properties["출연자"]["multi_select"]]
-            
-            scripts.append(script_info)
-        
-        # 영상 날짜 기준 내림차순 정렬
-        scripts.sort(key=lambda x: x["video_date"] or "", reverse=True)
-        
-        return {"status": "success", "scripts": scripts, "total": len(scripts)}
-    
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"스크립트 DB 조회 중 오류가 발생했습니다: {str(e)}")
+@app.get("/queue")
+async def list_queue():
+    videos = await get_all_videos()
+    return {"status": "success", "videos": videos, "total": len(videos)}
 
-@app.on_event("startup")
-async def startup_event():
-    """애플리케이션 시작 시 스케줄러 설정"""
-    setup_scheduler()
 
+
+@app.get("/opinions")
+async def list_opinions():
+    opinions = await get_all_opinions()
+    return {"status": "success", "opinions": opinions, "total": len(opinions)}
+
+
+@app.get("/config")
+async def show_config():
+    s = get_settings()
+    return {
+        "llm_provider": s.llm.provider,
+        "llm_model": s.llm.model,
+        "monitor_interval": s.scheduler.monitor_interval_minutes,
+        "filter_interval": s.scheduler.filter_interval_minutes,
+        "filter_hours": f"{s.scheduler.filter_active_hour_start}~{s.scheduler.filter_active_hour_end}",
+        "report_interval": s.scheduler.report_interval_minutes,
+        "normalize_batch_size": s.scheduler.normalize_batch_size,
+        "normalize_interval": s.scheduler.normalize_interval_minutes,
+    }
+
+
+# ──────────────────────────────────────────────
+# 수동 실행 엔드포인트
+# ──────────────────────────────────────────────
+@app.post("/run/monitor")
+async def run_monitor(background_tasks: BackgroundTasks):
+    background_tasks.add_task(channel_monitor.run)
+    return {"status": "started", "agent": "channel_monitor"}
+
+
+@app.post("/run/filter")
+async def run_filter(background_tasks: BackgroundTasks):
+    background_tasks.add_task(filter_agent.run)
+    return {"status": "started", "agent": "filter_agent"}
+
+
+@app.post("/run/extract")
+async def run_extract(background_tasks: BackgroundTasks):
+    background_tasks.add_task(stock_extract_agent.run)
+    return {"status": "started", "agent": "stock_extract_agent"}
+
+
+@app.post("/run/normalize")
+async def run_normalize(background_tasks: BackgroundTasks):
+    background_tasks.add_task(normalize_agent.run)
+    return {"status": "started", "agent": "normalize_agent"}
+
+
+# ──────────────────────────────────────────────
+# 직접 실행
+# ──────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8003, reload=True)
