@@ -8,7 +8,7 @@ import logging
 import asyncio
 
 from db.channels import get_active_channels
-from db.video_queue import video_exists, register_video, get_subtitle_unchecked_videos, update_subtitle_status
+from db.video_queue import video_exists, register_video, get_subtitle_recheck_targets, update_subtitle_status
 from services.youtube import get_latest_videos, parse_upload_date
 from services.transcript import check_subtitle_available
 
@@ -120,23 +120,24 @@ async def run() -> dict:
 
 
 async def _recheck_subtitle_status() -> int:
-    """자막상태=미확인인 영상들을 재확인합니다."""
-    unchecked = await get_subtitle_unchecked_videos()
-    if not unchecked:
+    """자막상태가 미확인이거나, 분석필요이지만 자막상태가 N인 영상들을 재확인합니다."""
+    targets = await get_subtitle_recheck_targets()
+    if not targets:
         return 0
 
-    logger.info(f"자막 재확인 대상: {len(unchecked)}건")
+    logger.info(f"자막 재확인 대상: {len(targets)}건")
     updated = 0
 
-    for video in unchecked:
+    for video in targets:
         video_id = video.get("video_id", "")
+        old_status = video.get("subtitle_status", "")
         if not video_id:
             continue
 
         new_status = await check_subtitle_available(video_id)
-        if new_status != "미확인":
+        if new_status != old_status:
             await update_subtitle_status(video["page_id"], new_status)
             updated += 1
-            logger.info(f"  자막상태 업데이트: {video['title']} → {new_status}")
+            logger.info(f"  자막상태 업데이트: {video['title']} ({old_status} → {new_status})")
 
     return updated

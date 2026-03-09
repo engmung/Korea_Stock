@@ -62,9 +62,22 @@ async def video_exists(video_id: str) -> bool:
     return len(pages) > 0
 
 
-async def get_subtitle_unchecked_videos() -> List[Dict[str, Any]]:
-    """자막상태가 '미확인'인 영상을 조회합니다."""
-    return await get_videos_by_status(subtitle_status="미확인")
+async def get_subtitle_recheck_targets() -> List[Dict[str, Any]]:
+    """자막상태가 '미확인'이거나, 분석필요가 '필요'인데 자막이 'N'인 영상을 조회합니다."""
+    s = get_settings()
+    filter_body = {
+        "or": [
+            {"property": "자막상태", "select": {"equals": "미확인"}},
+            {
+                "and": [
+                    {"property": "분석필요", "select": {"equals": "필요"}},
+                    {"property": "자막상태", "select": {"equals": "N"}},
+                ]
+            }
+        ]
+    }
+    pages = await query_database(s.notion.video_queue_db_id, filter_body=filter_body)
+    return [_parse_video_page(p) for p in pages]
 
 
 async def get_pending_filter_videos() -> List[Dict[str, Any]]:
