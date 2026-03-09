@@ -178,8 +178,17 @@ async def get_visualization_data(days: int = 3, interval_hours: int = 12) -> Dic
             
             # total agg
             if name not in total_agg:
-                total_agg[name] = {"추천": 0, "주의": 0, "관심": 0}
+                total_agg[name] = {"추천": 0, "주의": 0, "관심": 0, "opinions": []}
             total_agg[name][op_type] += 1
+            
+            # append detail
+            total_agg[name]["opinions"].append({
+                "opinion_type": op.opinion_type,
+                "recommender": op.recommender,
+                "reason_summary": op.reason_summary,
+                "video_id": op.video_id,
+                "upload_date": op.upload_date
+            })
             
             # timeline agg
             try:

@@ -18,8 +18,11 @@ let dataCache = {
 // Three.js Core Variables
 let scene, camera, renderer, controls;
 let raycaster, mouse;
-let spheres = []; // Holds references to all mesh objects
-let hoveredSphere = null;
+let elements = []; // Holds references to all mesh objects
+let lines = [];    // Holds connecting lines
+let hoveredMesh = null;
+let selectedStockName = null;
+let stockPositions = {}; // Store fixed X,Z coordinates for each stock
 
 // Colors
 const COLOR_NEUTRAL = 0x94A3B8;
@@ -104,15 +107,6 @@ function initThreeJS() {
     controls.minDistance = 20;
     controls.maxDistance = 500;
 
-    // Lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
-    scene.add(ambientLight);
-
-    const pointLight = new THREE.PointLight(0xffffff, 0.6);
-    pointLight.position.set(50, 200, 50);
-    camera.add(pointLight); // light follows camera attached to scene later
-    scene.add(camera);
-
     // Grid Helper (Floor)
     const grid = new THREE.GridHelper(400, 40, 0x1e293b, 0x0f172a);
     grid.position.y = -50;
@@ -131,18 +125,28 @@ function initThreeJS() {
 // ==========================================
 // 3. Visualization Builders
 // ==========================================
-function clearSpheres() {
-    spheres.forEach(obj => {
+function clearElements() {
+    elements.forEach(obj => {
         scene.remove(obj.mesh);
-        // Clean up geometry & materials
         obj.mesh.geometry.dispose();
-        obj.mesh.material.dispose();
+        if(Array.isArray(obj.mesh.material)){
+            obj.mesh.material.forEach(m=>m.dispose());
+        }else{
+            obj.mesh.material.dispose();
+        }
     });
-    spheres = [];
+    elements = [];
+
+    lines.forEach(line => {
+        scene.remove(line);
+        line.geometry.dispose();
+        line.material.dispose();
+    });
+    lines = [];
 }
 
 /** 
- * Calculate sphere color based on recommend/caution ratio
+ * Calculate color based on recommend/caution ratio
  */
 function getColor(rec, cau) {
     if (rec > 0 && cau === 0) return COLOR_RECOMMEND;
@@ -152,33 +156,40 @@ function getColor(rec, cau) {
 }
 
 /**
- * 2D Flat Mode: All stocks summarized over the total selected days.
- * Arranged in a spiraling distribution on the XZ plane.
+ * Pre-calculate fixed positions for each stock so they align vertically.
+ * Arranged in a spiraling distribution.
  */
-function buildFlatMode() {
+function calculateStockPositions() {
+    stockPositions = {};
     const keys = Object.keys(dataCache.total).sort((a,b) => {
         // Sort by total signals descending
-        const totalA = Object.values(dataCache.total[a]).reduce((acc, val)=>acc+val, 0);
-        const totalB = Object.values(dataCache.total[b]).reduce((acc, val)=>acc+val, 0);
+        const totalA = dataCache.total[a]['추천'] + dataCache.total[a]['주의'] + dataCache.total[a]['관심'];
+        const totalB = dataCache.total[b]['추천'] + dataCache.total[b]['주의'] + dataCache.total[b]['관심'];
         return totalB - totalA;
     });
 
     keys.forEach((stockName, idx) => {
+        const phi = idx * 1.375; // golden ratio approx
+        const rDist = Math.max(15, Math.sqrt(idx) * 22); // Reverted spread to prevent overlap
+        stockPositions[stockName] = {
+            x: rDist * Math.cos(phi),
+            z: rDist * Math.sin(phi)
+        };
+    });
+}
+
+function buildFlatMode() {
+    Object.keys(dataCache.total).forEach(stockName => {
         const stats = dataCache.total[stockName];
         const totalSignals = stats['추천'] + stats['주의'] + stats['관심'];
+        if (totalSignals === 0) return;
         
         // Base size logic: larger means more total recommendations
-        const radius = Math.max(3, Math.min(20, totalSignals * 2));
+        const radius = Math.max(3, Math.min(25, totalSignals * 2.5));
         const color = getColor(stats['추천'], stats['주의']);
 
-        // Spiral arrangement
-        const phi = idx * 1.375; // golden ratio approx
-        const rDist = Math.sqrt(idx) * 15;
-        const x = rDist * Math.cos(phi);
-        const z = rDist * Math.sin(phi);
-        const y = 0; // Flat
-
-        createSphere(stockName, stats, radius, color, x, y, z);
+        const pos = stockPositions[stockName];
+        createDisc(stockName, stats, radius, color, pos.x, 0, pos.z, true);
     });
 }
 
@@ -187,69 +198,77 @@ function buildFlatMode() {
  * Standard Y axis mapping (higher up = more recent).
  */
 function buildTimelineMode() {
-    // Determine max bucket index to scale Y axis appropriately
     const buckets = Object.keys(dataCache.timeline).map(Number).sort((a,b) => a-b);
     if (buckets.length === 0) return;
     
-    // We space each 12-hour bucket vertically by 30 units
-    const Y_SPACING = 30;
+    // Reduces the vertical gap between different dates
+    const Y_SPACING = 15;
     
+    // Track previous positions for each stock to draw vertical lines
+    const prevPos = {};
+
     buckets.forEach(bucketIdx => {
         const levelData = dataCache.timeline[bucketIdx];
         const yPos = -bucketIdx * Y_SPACING + 50; // newest at +50, older goes downwards
         
         const stocks = Object.keys(levelData);
-        // Distribute stocks in this bucket in a circle
-        const numStocks = stocks.length;
-        const circleRadius = Math.max(20, numStocks * 4); // expand ring if many stocks
         
-        stocks.forEach((stockName, idx) => {
+        stocks.forEach((stockName) => {
             const stats = levelData[stockName];
             const totalSignals = stats['추천'] + stats['주의'] + stats['관심'];
+            if (totalSignals === 0) return;
             
-            const radius = Math.max(2, Math.min(15, totalSignals * 2));
+            const radius = Math.max(2, Math.min(18, totalSignals * 2.5));
             const color = getColor(stats['추천'], stats['주의']);
             
-            const angle = (idx / numStocks) * Math.PI * 2;
-            const x = circleRadius * Math.cos(angle);
-            const z = circleRadius * Math.sin(angle);
+            const pos = stockPositions[stockName];
             
-            createSphere(stockName, stats, radius, color, x, yPos, z);
+            // Draw disc
+            createDisc(stockName, stats, radius, color, pos.x, yPos, pos.z, false);
+            
+            // Draw connecting line to previous bucket if it exists
+            if (prevPos[stockName]) {
+                const material = new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 0.3 });
+                const points = [];
+                points.push(new THREE.Vector3(pos.x, prevPos[stockName].y, pos.z));
+                points.push(new THREE.Vector3(pos.x, yPos, pos.z));
+                
+                const geometry = new THREE.BufferGeometry().setFromPoints(points);
+                const line = new THREE.Line(geometry, material);
+                line.userData = { name: stockName };
+                scene.add(line);
+                lines.push(line);
+            }
+            
+            prevPos[stockName] = { y: yPos };
         });
         
-        // Add a subtle ring to delineate the time period visually
-        const ringGeo = new THREE.RingGeometry(circleRadius - 0.5, circleRadius + 0.5, 64);
-        const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.1, side: THREE.DoubleSide });
+        // Add a subtle ring to delineate the time period visually (around the center)
+        const ringGeo = new THREE.RingGeometry(150, 151, 64);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.05, side: THREE.DoubleSide });
         const ring = new THREE.Mesh(ringGeo, ringMat);
         ring.rotation.x = Math.PI / 2;
         ring.position.y = yPos;
         scene.add(ring);
-        // Hack: track rings to remove them later when rebuilding
-        spheres.push({ mesh: ring, isRing: true }); 
+        elements.push({ mesh: ring, isRing: true }); 
     });
 }
 
-function createSphere(name, stats, radius, colorHex, tx, ty, tz) {
-    const geometry = new THREE.SphereGeometry(radius, 32, 32);
+function createDisc(name, stats, radius, colorHex, tx, ty, tz, isFlatMode) {
+    // Cylinder looking like a flat disc (coin)
+    const geometry = new THREE.CylinderGeometry(radius, radius, 1, 32);
     
-    // Premium glowing material using MeshPhysicalMaterial
-    const material = new THREE.MeshPhysicalMaterial({
+    const material = new THREE.MeshBasicMaterial({
         color: colorHex,
-        emissive: colorHex,
-        emissiveIntensity: 0.5,
-        roughness: 0.2,
-        metalness: 0.8,
-        transmission: 0.5, // glass effect
-        opacity: 0.9,
-        transparent: true
+        transparent: true,
+        opacity: 0.95
     });
 
     const mesh = new THREE.Mesh(geometry, material);
     
-    // Initial position for intro animation (drop from above)
-    mesh.position.set(tx, ty + 200, tz);
+    // Intro Animation using GSAP
+    mesh.position.set(tx, ty + (isFlatMode ? 100 : 50), tz);
     
-    // Data attached to mesh for hover/click interaction
     mesh.userData = {
         name: name,
         stats: stats,
@@ -259,29 +278,28 @@ function createSphere(name, stats, radius, colorHex, tx, ty, tz) {
     };
 
     scene.add(mesh);
-    spheres.push({ mesh, data: mesh.userData });
+    elements.push({ mesh, data: mesh.userData });
 
-    // Intro Animation using GSAP
     gsap.to(mesh.position, {
         x: tx, y: ty, z: tz,
-        duration: 1.5,
-        ease: "bounce.out",
-        delay: Math.random() * 0.5 // staggered drop
+        duration: 1.2,
+        ease: "power2.out",
+        delay: Math.random() * 0.3 
     });
 }
 
 function buildVisualization() {
-    clearSpheres();
+    clearElements();
+    calculateStockPositions();
 
     if (config.isTimelineMode) {
         buildTimelineMode();
-        // Adjust camera to view vertical stack better
-        gsap.to(camera.position, { x: 150, y: 50, z: 250, duration: 1.5 });
+        gsap.to(camera.position, { x: 100, y: 30, z: 200, duration: 1.5 });
     } else {
         buildFlatMode();
-        // Top-down angled view
-        gsap.to(camera.position, { x: 0, y: 150, z: 200, duration: 1.5 });
+        gsap.to(camera.position, { x: 0, y: 80, z: 120, duration: 1.5 });
     }
+    updateSelectionHighlight();
 }
 
 // ==========================================
@@ -307,6 +325,8 @@ function setupEventListeners() {
     // Close Detail Panel
     closePanelBtn.addEventListener('click', () => {
         detailPanel.classList.add('hidden');
+        selectedStockName = null;
+        updateSelectionHighlight();
         resetHover();
     });
 }
@@ -324,36 +344,102 @@ function onMouseMove(event) {
 }
 
 function onClick() {
-    if (hoveredSphere && !hoveredSphere.isRing) {
-        openDetailPanel(hoveredSphere.userData);
+    if (hoveredMesh && !hoveredMesh.isRing) {
+        selectedStockName = hoveredMesh.userData.name;
+        updateSelectionHighlight();
+        openDetailPanel(hoveredMesh.userData);
         
-        // Animate camera to look at the clicked sphere (but keep distance)
-        const target = hoveredSphere.position;
+        const target = hoveredMesh.position;
         gsap.to(controls.target, {
             x: target.x, y: target.y, z: target.z,
             duration: 1, ease: "power2.out"
         });
+    } else {
+        // Deselect when clicking empty space
+        selectedStockName = null;
+        updateSelectionHighlight();
+        detailPanel.classList.add('hidden');
     }
 }
 
+function updateSelectionHighlight() {
+    elements.forEach(obj => {
+        if (obj.isRing) return;
+        
+        const mat = obj.mesh.material;
+        const color = new THREE.Color(obj.data.baseColor);
+
+        if (!selectedStockName || obj.data.name === selectedStockName) {
+            mat.opacity = 0.95;
+            mat.color.copy(color);
+        } else {
+            mat.opacity = 0.2;
+            const hsl = {};
+            color.getHSL(hsl);
+            color.setHSL(hsl.h, 0.0, hsl.l * 0.5); // Desaturate
+            mat.color.copy(color);
+        }
+    });
+
+    lines.forEach(line => {
+        if (!selectedStockName || line.userData.name === selectedStockName) {
+            line.material.opacity = 0.3;
+        } else {
+            line.material.opacity = 0.05;
+        }
+    });
+}
+
 function resetHover() {
-    if (hoveredSphere && !hoveredSphere.isRing) {
-        gsap.to(hoveredSphere.scale, { x: 1, y: 1, z: 1, duration: 0.3 });
-        hoveredSphere.material.emissiveIntensity = 0.5;
+    if (hoveredMesh && !hoveredMesh.isRing) {
+        gsap.to(hoveredMesh.scale, { x: 1, y: 1, z: 1, duration: 0.3 });
+        if (selectedStockName && hoveredMesh.userData.name !== selectedStockName) {
+            hoveredMesh.material.opacity = 0.2;
+        } else {
+            hoveredMesh.material.opacity = 0.95;
+        }
         document.body.style.cursor = 'default';
-        hoveredSphere = null;
+        hoveredMesh = null;
     }
 }
 
 function openDetailPanel(data) {
-    const { name, stats } = Object.keys(dataCache.total).includes(data.name) 
-                            ? { name: data.name, stats: dataCache.total[data.name] } 
-                            : data;
+    const stockName = data.name;
+    const globalStats = dataCache.total[stockName] || data.stats;
 
-    elTitle.textContent = name;
-    elRec.textContent = stats['추천'] || 0;
-    elCau.textContent = stats['주의'] || 0;
+    elTitle.textContent = stockName;
+    elRec.textContent = globalStats['추천'] || 0;
+    elCau.textContent = globalStats['주의'] || 0;
     
+    // Generate detailed opinions list
+    const ul = document.getElementById('opinion-list');
+    ul.innerHTML = ''; // clear previous
+    
+    if (globalStats.opinions && globalStats.opinions.length > 0) {
+        // sort by most recent first
+        const sorted = [...globalStats.opinions].sort((a,b) => new Date(b.upload_date) - new Date(a.upload_date));
+        
+        sorted.forEach(op => {
+            const li = document.createElement('li');
+            li.className = `opinion-item ${op.opinion_type === '추천' ? 'item-rec' : op.opinion_type === '주의' ? 'item-cau' : ''}`;
+            
+            const dateStr = new Date(op.upload_date).toLocaleDateString('ko-KR');
+            const ytLink = op.video_id ? `<a href="https://youtube.com/watch?v=${op.video_id}" target="_blank" class="yt-link">[유튜브 보기]</a>` : '';
+            
+            li.innerHTML = `
+                <div class="op-header">
+                    <span class="op-type">${op.opinion_type}</span>
+                    <span class="op-date">${dateStr}</span>
+                </div>
+                <div class="op-recommender"><strong>전문가/채널:</strong> ${op.recommender || '불명'} ${ytLink}</div>
+                <div class="op-reason">${op.reason_summary || '요약 없음'}</div>
+            `;
+            ul.appendChild(li);
+        });
+    } else {
+        ul.innerHTML = '<li class="hint">상세 의견 데이터가 없습니다.</li>';
+    }
+
     detailPanel.classList.remove('hidden');
 }
 
@@ -363,38 +449,27 @@ function openDetailPanel(data) {
 function animate() {
     requestAnimationFrame(animate);
 
-    controls.update(); // required if damping enabled
+    controls.update(); 
 
-    // Hover Raycasting Logic
     raycaster.setFromCamera(mouse, camera);
     
-    // Filter out rings from intersection testing
-    const interactables = spheres.filter(s => !s.isRing).map(s => s.mesh);
+    const interactables = elements.filter(s => !s.isRing).map(s => s.mesh);
     const intersects = raycaster.intersectObjects(interactables);
 
     if (intersects.length > 0) {
         const object = intersects[0].object;
-        if (hoveredSphere !== object) {
+        if (hoveredMesh !== object) {
             resetHover();
-            hoveredSphere = object;
+            hoveredMesh = object;
             
             // Hover effect
             document.body.style.cursor = 'pointer';
-            gsap.to(hoveredSphere.scale, { x: 1.3, y: 1.3, z: 1.3, duration: 0.3, ease: "back.out(1.7)" });
-            hoveredSphere.material.emissiveIntensity = 1.0;
+            gsap.to(hoveredMesh.scale, { x: 1.15, y: 1.15, z: 1.15, duration: 0.3, ease: "back.out(1.7)" });
+            hoveredMesh.material.opacity = 1.0;
         }
     } else {
         resetHover();
     }
-
-    // Subtle floating animation for all spheres
-    const time = Date.now() * 0.001;
-    spheres.forEach((s, i) => {
-        if (!s.isRing && s.mesh.userData.targetPos) {
-            // Sine wave floating effect based on base position
-            s.mesh.position.y = s.mesh.userData.targetPos.y + Math.sin(time * 2 + i) * 2;
-        }
-    });
 
     renderer.render(scene, camera);
 }

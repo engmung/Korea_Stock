@@ -30,20 +30,33 @@ async def get_transcript(video_id: str, max_retries: int = 10) -> Optional[str]:
 
         try:
             transcript_list = await asyncio.to_thread(
-                YouTubeTranscriptApi.get_transcript, 
+                YouTubeTranscriptApi.list_transcripts, 
                 video_id, 
-                languages=["ko"],
                 proxies=proxies
             )
-            text = " ".join(entry["text"] for entry in transcript_list)
-            logger.info(f"한국어 자막 {len(transcript_list)}개 자막 추출 성공 (video_id={video_id})")
+            
+            # Find any Korean transcript (manual or generated)
+            ko_transcript = None
+            for tx in transcript_list:
+                if 'ko' in tx.language_code.lower() or 'korean' in tx.language.lower() or '한국어' in tx.language:
+                    if not ko_transcript or not tx.is_generated:
+                        ko_transcript = tx # Prefer manual if both exist
+            
+            if not ko_transcript:
+                logger.info(f"자막 없음 (한국어 제외 다국어만 존재): {video_id}")
+                return None
+                
+            data = ko_transcript.fetch()
+            text = " ".join(entry["text"] for entry in data)
+            logger.info(f"한국어 자막 추출 성공 ('{ko_transcript.language}', generated={ko_transcript.is_generated}, video_id={video_id})")
             return text
+            
         except Exception as e:
-            if subtitles_disabled_msg in str(e):
+            if "Subtitles are disabled" in str(e):
                 logger.info(f"자막 비활성화: {video_id}")
                 return None
             if "No transcripts were found" in str(e):
-                logger.info(f"자막 없음: {video_id}")
+                logger.info(f"자막 없음 (아예 없음): {video_id}")
                 return None
 
             # 429 Rate Limit → 긴 대기 후 재시도
@@ -59,6 +72,8 @@ async def get_transcript(video_id: str, max_retries: int = 10) -> Optional[str]:
 
             # ProxyError나 Timeout 등 기타 오류는 짧게 대기 후 새 프록시로 즉시 재시도
             logger.warning(f"자막 오류 (시도 {attempt + 1}/{max_retries}): {type(e).__name__} - 프록시 자동 교체 진행")
+            import traceback
+            traceback.print_exc()
             if attempt < max_retries - 1:
                 await asyncio.sleep(random.uniform(0.5, 2.0))
 
@@ -77,12 +92,18 @@ async def check_subtitle_available(video_id: str) -> str:
             proxies = {"http": proxy_url, "https": proxy_url}
         
         transcript_list = await asyncio.to_thread(
-            YouTubeTranscriptApi.get_transcript, 
+            YouTubeTranscriptApi.list_transcripts, 
             video_id, 
-            languages=["ko"],
             proxies=proxies
         )
-        return "Y" if transcript_list else "N"
+        
+        ko_exists = False
+        for tx in transcript_list:
+            if 'ko' in tx.language_code.lower() or 'korean' in tx.language.lower() or '한국어' in tx.language:
+                ko_exists = True
+                break
+                
+        return "Y" if ko_exists else "N"
     except Exception as e:
         if "Subtitles are disabled" in str(e):
             return "N"
