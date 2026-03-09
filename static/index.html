@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Opinion 3D Dashboard</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <!-- Custom Styles -->
+    <link rel="stylesheet" href="css/style.css">
+    
+    <!-- Three.js (r128) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- GSAP for smooth animations -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+</head>
+<body>
+    <!-- 3D Canvas Container -->
+    <div id="canvas-container"></div>
+
+    <!-- UI Overlay: Header & Controls -->
+    <header class="glass-panel top-bar">
+        <div class="logo">
+            <h1>STK<span>O</span></h1>
+            <p>3D Market Insights</p>
+        </div>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="days-input">조회 기간(일):</label>
+                <input type="number" id="days-input" value="3" min="1" max="30">
+            </div>
+            
+            <button id="view-toggle-btn" class="glow-btn">
+                <span class="view-text">타임라인 뷰</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Side Panel: Detail View -->
+    <aside id="detail-panel" class="glass-panel detail-panel hidden">
+        <div class="panel-header">
+            <h2 id="detail-title">종목명</h2>
+            <button id="close-panel-btn" class="close-btn">&times;</button>
+        </div>
+        
+        <div class="stats-row">
+            <div class="stat-box recommend">
+                <span class="label">추천</span>
+                <span id="detail-recommend" class="value">0</span>
+            </div>
+            <div class="stat-box caution">
+                <span class="label">주의</span>
+                <span id="detail-caution" class="value">0</span>
+            </div>
+        </div>
+
+        <div class="scroll-area">
+            <h3>Recent Opinions (API Mockup)</h3>
+            <p class="hint">상세 조회 API 적용 시 여기에 근거 및 원본 영상 링크가 표시됩니다.</p>
+            <ul id="opinion-list" class="opinion-list">
+                <!-- JS will inject list here -->
+            </ul>
+        </div>
+    </aside>
+
+    <!-- Loading Overlay -->
+    <div id="loader" class="loader active">
+        <div class="spinner"></div>
+        <p>Loading Data...</p>
+    </div>
+
+    <!-- Main Logic -->
+    <script src="js/app.js"></script>
+</body>
+</html>

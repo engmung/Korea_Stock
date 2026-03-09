@@ -6,8 +6,9 @@ import os
 from logging.handlers import TimedRotatingFileHandler
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
@@ -16,7 +17,7 @@ from config.settings import get_settings
 from agents import channel_monitor, filter_agent, stock_extract_agent, normalize_agent
 from db.channels import get_all_channels
 from db.video_queue import get_all_videos
-from db.stock_opinions import get_all_opinions
+from db.stock_opinions import get_all_opinions, get_visualization_data
 from db.database import init_db
 
 # ──────────────────────────────────────────────
@@ -121,7 +122,8 @@ app.add_middleware(
 # ──────────────────────────────────────────────
 # 조회 엔드포인트
 # ──────────────────────────────────────────────
-@app.get("/")
+# 백엔드 API 루트는 /api 로 리다이렉트하거나 상태 표시
+@app.get("/api/status")
 async def root():
     s = get_settings()
     return {
@@ -129,6 +131,15 @@ async def root():
         "llm_provider": s.llm.provider,
         "llm_model": s.llm.model,
     }
+
+@app.get("/api/visualization")
+async def api_visualization(
+    days: int = Query(3, description="최근 X일 데이터 조회"),
+    interval_hours: int = Query(12, description="타임라인 뷰 용 시간대 버킷 (단위: 시간)")
+):
+    """3D 시각화용 통합 데이터 조회 API"""
+    data = await get_visualization_data(days=days, interval_hours=interval_hours)
+    return {"status": "success", "data": data}
 
 
 @app.get("/channels")
@@ -148,6 +159,11 @@ async def list_queue():
 async def list_opinions():
     opinions = await get_all_opinions()
     return {"status": "success", "opinions": opinions, "total": len(opinions)}
+
+# 프론트엔드 서빙 (루트 경로에서 정적 HTML 로드)
+# 디렉토리가 없으면 에러가 나므로 생성해둡니다.
+os.makedirs(os.path.join(os.path.dirname(__file__), "static"), exist_ok=True)
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
 
 @app.get("/config")

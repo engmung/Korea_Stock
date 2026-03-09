@@ -1,0 +1,297 @@
+/* 
+  Premium Dark Space UI using Glassmorphism 
+*/
+
+:root {
+    --bg-color: #0B0F19;
+    --text-main: #E2E8F0;
+    --text-muted: #94A3B8;
+    
+    --color-recommend: #F43F5E; /* Rose / Red glow */
+    --color-caution: #0EA5E9; /* Sky / Cyan glow */
+    
+    --glass-bg: rgba(15, 23, 42, 0.4);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-main);
+    overflow: hidden; /* Prevent scrolling, 3D takes full screen */
+    width: 100vw;
+    height: 100vh;
+}
+
+#canvas-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+}
+
+/* Glassmorphism Panel Base */
+.glass-panel {
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--glass-shadow);
+    border-radius: 16px;
+    z-index: 10;
+}
+
+/* ───────────────────────────────────────────
+   Top Bar
+   ─────────────────────────────────────────── */
+.top-bar {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    right: 20px;
+    height: 80px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 30px;
+}
+
+.logo h1 {
+    font-weight: 800;
+    font-size: 28px;
+    letter-spacing: 2px;
+}
+
+.logo span {
+    color: var(--color-recommend);
+    text-shadow: 0 0 10px rgba(244, 63, 94, 0.5);
+}
+
+.logo p {
+    font-size: 12px;
+    color: var(--text-muted);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.controls {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.control-group label {
+    font-size: 14px;
+    color: var(--text-muted);
+}
+
+.control-group input {
+    width: 60px;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid var(--glass-border);
+    color: #fff;
+    padding: 8px;
+    border-radius: 8px;
+    font-family: 'Inter', sans-serif;
+    text-align: center;
+}
+
+.control-group input:focus {
+    outline: none;
+    border-color: var(--color-caution);
+}
+
+.glow-btn {
+    background: transparent;
+    color: #fff;
+    border: 1px solid var(--glass-border);
+    padding: 10px 24px;
+    border-radius: 8px;
+    font-family: 'Inter', sans-serif;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    overflow: hidden;
+    position: relative;
+}
+
+.glow-btn:hover {
+    background: rgba(255,255,255,0.05);
+    border-color: rgba(255,255,255,0.3);
+    box-shadow: 0 0 15px rgba(255,255,255,0.1);
+}
+
+/* ───────────────────────────────────────────
+   Side Panel
+   ─────────────────────────────────────────── */
+.detail-panel {
+    position: absolute;
+    top: 120px;
+    right: 20px;
+    width: 350px;
+    height: calc(100vh - 140px);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(0);
+    transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.4s ease;
+}
+
+.detail-panel.hidden {
+    transform: translateX(400px);
+    opacity: 0;
+    pointer-events: none;
+}
+
+.panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--glass-border);
+}
+
+#detail-title {
+    font-size: 24px;
+    font-weight: 800;
+}
+
+.close-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 28px;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+
+.close-btn:hover {
+    color: #fff;
+}
+
+.stats-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 24px;
+}
+
+.stat-box {
+    flex: 1;
+    background: rgba(0,0,0,0.2);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.stat-box .label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.stat-box .value {
+    font-size: 32px;
+    font-weight: 800;
+}
+
+.stat-box.recommend .value {
+    color: var(--color-recommend);
+    text-shadow: 0 0 15px rgba(244, 63, 94, 0.4);
+}
+
+.stat-box.caution .value {
+    color: var(--color-caution);
+    text-shadow: 0 0 15px rgba(14, 165, 233, 0.4);
+}
+
+.scroll-area {
+    flex: 1;
+    overflow-y: auto;
+}
+
+.scroll-area h3 {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 8px;
+}
+
+.hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    font-style: italic;
+    opacity: 0.7;
+    margin-bottom: 16px;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+    width: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--glass-border);
+    border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255,255,255,0.3);
+}
+
+/* ───────────────────────────────────────────
+   Loading Overlay
+   ─────────────────────────────────────────── */
+.loader {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: var(--bg-color);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    transition: opacity 0.5s ease;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.loader.active {
+    opacity: 1;
+    pointer-events: all;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 3px solid var(--glass-border);
+    border-top-color: var(--color-recommend);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin-bottom: 16px;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}

@@ -4,6 +4,8 @@ SQLite 데이터베이스에서 종목별 의견 레코드 생성, 정규화 상
 """
 import logging
 import uuid
+from datetime import datetime, timedelta
+import dateutil.parser
 from typing import Dict, List, Any, Optional
 from sqlalchemy.future import select
 from sqlalchemy import update
@@ -142,3 +144,68 @@ async def update_normalization(
         await session.execute(stmt)
         await session.commit()
     return True
+
+# ──────────────────────────────────────────────
+# 시각화 데이터 조회 (3D Frontend)
+# ──────────────────────────────────────────────
+async def get_visualization_data(days: int = 3, interval_hours: int = 12) -> Dict[str, Any]:
+    """3D 렌더링용 시각화 데이터를 시간대 버킷별로 조회합니다."""
+    session_maker = get_session_maker()
+    
+    # KST 기준 날짜 계산 (로컬 서버 환경이 KST로 가정)
+    now = datetime.now()
+    cutoff_date = now - timedelta(days=days)
+    cutoff_iso = cutoff_date.isoformat()
+
+    async with session_maker() as session:
+        stmt = select(StockOpinion).where(
+            StockOpinion.normalization_status == "완료",
+            StockOpinion.upload_date >= cutoff_iso
+        ).order_by(StockOpinion.upload_date.desc())
+        
+        result = await session.execute(stmt)
+        opinions = result.scalars().all()
+
+        total_agg = {}
+        timeline_agg = {}
+        
+        for op in opinions:
+            name = op.normalized_name
+            if not name:
+                continue
+                
+            op_type = op.opinion_type if op.opinion_type in ["추천", "주의", "관심"] else "관심"
+            
+            # total agg
+            if name not in total_agg:
+                total_agg[name] = {"추천": 0, "주의": 0, "관심": 0}
+            total_agg[name][op_type] += 1
+            
+            # timeline agg
+            try:
+                # 업로드 시간 파싱 (ISO 8601 -> datetime)
+                op_date = dateutil.parser.parse(op.upload_date)
+                if op_date.tzinfo is not None:
+                    # offset-aware면 naive local time으로 변환
+                    op_date = op_date.astimezone().replace(tzinfo=None)
+            except Exception as e:
+                logger.error(f"날짜 파싱 오류: {e}")
+                continue
+            
+            hours_diff = (now - op_date).total_seconds() / 3600.0
+            if hours_diff < 0:
+                hours_diff = 0
+            
+            bucket_idx = int(hours_diff // interval_hours)
+            
+            if bucket_idx not in timeline_agg:
+                timeline_agg[bucket_idx] = {}
+            if name not in timeline_agg[bucket_idx]:
+                timeline_agg[bucket_idx][name] = {"추천": 0, "주의": 0, "관심": 0}
+                
+            timeline_agg[bucket_idx][name][op_type] += 1
+            
+        return {
+            "total": total_agg,
+            "timeline": timeline_agg
+        }
