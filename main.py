@@ -17,6 +17,7 @@ from agents import channel_monitor, filter_agent, stock_extract_agent, normalize
 from db.channels import get_all_channels
 from db.video_queue import get_all_videos
 from db.stock_opinions import get_all_opinions
+from db.database import init_db
 
 # ──────────────────────────────────────────────
 # 로깅 설정 (콘솔 + 파일)
@@ -99,6 +100,8 @@ def setup_scheduler():
 # ──────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    s = get_settings()
+    await init_db(s.db.url)
     setup_scheduler()
     yield
     scheduler.shutdown()

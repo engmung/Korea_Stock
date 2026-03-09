@@ -39,3 +39,7 @@ agent_runner_*.log
 
 # Docker
 .dockerignore
+
+# Database
+data/
+*.db

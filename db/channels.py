@@ -1,39 +1,38 @@
 """
 채널 DB CRUD
-채널 DB에서 활성 채널 목록을 조회합니다.
+SQLite 채널 테이블에서 활성 채널 목록을 조회합니다.
 """
 import logging
 from typing import Dict, List, Any
+from sqlalchemy.future import select
 
-from config.settings import get_settings
-from db.client import query_database
+from db.database import get_session_maker, Channel
 
 logger = logging.getLogger(__name__)
 
 
 async def get_active_channels() -> List[Dict[str, Any]]:
     """활성화된 채널 목록을 조회하여 정리된 딕셔너리 리스트로 반환합니다."""
-    s = get_settings()
-    filter_body = {
-        "property": "활성화",
-        "checkbox": {"equals": True},
-    }
-    pages = await query_database(s.notion.channel_db_id, filter_body=filter_body)
-
+    session_maker = get_session_maker()
     channels = []
-    for page in pages:
-        props = page.get("properties", {})
-        channel = {
-            "page_id": page.get("id"),
-            "name": _get_title(props, "채널명"),
-            "url": _get_url(props, "URL"),
-            "keyword": _get_rich_text(props, "키워드"),
-            "active": _get_checkbox(props, "활성화"),
-        }
-        if channel["url"]:
-            channels.append(channel)
-        else:
-            logger.warning(f"채널 '{channel['name']}' — URL 누락, 스킵")
+    
+    async with session_maker() as session:
+        stmt = select(Channel).where(Channel.active == True)
+        result = await session.execute(stmt)
+        channel_objs = result.scalars().all()
+        
+        for ch in channel_objs:
+            channel = {
+                "page_id": ch.page_id,
+                "name": ch.name,
+                "url": ch.url,
+                "keyword": ch.keyword,
+                "active": ch.active,
+            }
+            if channel["url"]:
+                channels.append(channel)
+            else:
+                logger.warning(f"채널 '{channel['name']}' — URL 누락, 스킵")
 
     logger.info(f"활성 채널 {len(channels)}개 조회")
     return channels
@@ -41,44 +40,21 @@ async def get_active_channels() -> List[Dict[str, Any]]:
 
 async def get_all_channels() -> List[Dict[str, Any]]:
     """모든 채널을 조회합니다."""
-    s = get_settings()
-    pages = await query_database(s.notion.channel_db_id)
-
+    session_maker = get_session_maker()
     channels = []
-    for page in pages:
-        props = page.get("properties", {})
-        channels.append({
-            "page_id": page.get("id"),
-            "name": _get_title(props, "채널명"),
-            "url": _get_url(props, "URL"),
-            "keyword": _get_rich_text(props, "키워드"),
-            "active": _get_checkbox(props, "활성화"),
-        })
+    
+    async with session_maker() as session:
+        stmt = select(Channel)
+        result = await session.execute(stmt)
+        channel_objs = result.scalars().all()
+        
+        for ch in channel_objs:
+            channels.append({
+                "page_id": ch.page_id,
+                "name": ch.name,
+                "url": ch.url,
+                "keyword": ch.keyword,
+                "active": ch.active,
+            })
+            
     return channels
-
-
-# ──────────────────────────────────────────────
-# 속성 헬퍼
-# ──────────────────────────────────────────────
-def _get_title(props: dict, key: str) -> str:
-    prop = props.get(key, {})
-    if "title" in prop and prop["title"]:
-        return prop["title"][0].get("plain_text", "")
-    return ""
-
-
-def _get_url(props: dict, key: str) -> str:
-    prop = props.get(key, {})
-    return prop.get("url", "") or ""
-
-
-def _get_rich_text(props: dict, key: str) -> str:
-    prop = props.get(key, {})
-    if "rich_text" in prop and prop["rich_text"]:
-        return prop["rich_text"][0].get("plain_text", "")
-    return ""
-
-
-def _get_checkbox(props: dict, key: str) -> bool:
-    prop = props.get(key, {})
-    return prop.get("checkbox", False)

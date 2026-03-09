@@ -10,12 +10,9 @@ load_dotenv()
 
 
 @dataclass
-class NotionConfig:
-    """Notion API 관련 설정"""
-    api_key: str = ""
-    channel_db_id: str = ""
-    video_queue_db_id: str = ""
-    stock_opinion_db_id: str = ""
+class DatabaseConfig:
+    """SQLite DB 관련 설정"""
+    url: str = "sqlite+aiosqlite:///data/korea_stock.db"
 
 
 @dataclass
@@ -49,7 +46,7 @@ class YouTubeConfig:
 @dataclass
 class Settings:
     """전체 설정을 통합 관리하는 루트 설정 클래스"""
-    notion: NotionConfig = field(default_factory=NotionConfig)
+    db: DatabaseConfig = field(default_factory=DatabaseConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     youtube: YouTubeConfig = field(default_factory=YouTubeConfig)
@@ -70,11 +67,8 @@ def get_settings() -> Settings:
         return _settings
 
     _settings = Settings(
-        notion=NotionConfig(
-            api_key=os.getenv("NOTION_API_KEY", ""),
-            channel_db_id=os.getenv("CHANNEL_DB_ID", ""),
-            video_queue_db_id=os.getenv("VIDEO_QUEUE_DB_ID", ""),
-            stock_opinion_db_id=os.getenv("STOCK_OPINION_DB_ID", ""),
+        db=DatabaseConfig(
+            url=os.getenv("DATABASE_URL", "sqlite+aiosqlite:///data/korea_stock.db"),
         ),
         llm=LLMConfig(
             provider=os.getenv("LLM_PROVIDER", "gemini"),

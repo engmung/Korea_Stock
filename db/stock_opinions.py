@@ -1,14 +1,37 @@
 """
 종목의견 DB CRUD
-종목별 의견 레코드 생성, 정규화 상태 관리를 처리합니다.
+SQLite 데이터베이스에서 종목별 의견 레코드 생성, 정규화 상태 관리를 처리합니다.
 """
 import logging
+import uuid
 from typing import Dict, List, Any, Optional
+from sqlalchemy.future import select
+from sqlalchemy import update
 
-from config.settings import get_settings
-from db.client import query_database, create_page, update_page
+from db.database import get_session_maker, StockOpinion
 
 logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────
+# 변환 헬퍼
+# ──────────────────────────────────────────────
+def _to_dict(so: StockOpinion) -> Dict[str, Any]:
+    return {
+        "page_id": so.page_id,
+        "original_name": so.original_name,
+        "normalized_name": so.normalized_name,
+        "normalization_status": so.normalization_status,
+        "opinion_type": so.opinion_type,
+        "recommendation_date": so.upload_date,
+        "recommender": so.recommender,
+        "reason_summary": so.reason_summary,
+        "video_id": so.video_id,
+    }
+
+
+def _truncate(text: str, max_len: int) -> str:
+    return text[:max_len] if len(text) > max_len else text
 
 
 # ──────────────────────────────────────────────
@@ -21,53 +44,40 @@ async def create_stock_opinion(opinion: Dict[str, Any]) -> Optional[Dict[str, An
     Args:
         opinion: 종목 의견 정보
             - name: 원본 종목명
-            - opinion_type: 추천 | 관심 | 주의
+            - opinion_type: 추천 | 주의
             - recommender: 추천인 (전문가명 또는 프로그램명)
             - reason_summary: 근거 요약
             - upload_date: 추천일자 (영상 업로드 날짜)
             - video_id: 원본 영상 ID
     """
-    s = get_settings()
-
-    properties = {
-        "원본_종목명": {
-            "title": [{"text": {"content": opinion.get("name", "")}}]
-        },
-        "정규화_종목명": {
-            "rich_text": []  # 초기 빈값
-        },
-        "정규화_상태": {
-            "select": {"name": "미처리"}
-        },
-        "의견유형": {
-            "select": {"name": opinion.get("opinion_type", "관심")}
-        },
-        "추천인": {
-            "rich_text": [{"text": {"content": opinion.get("recommender", "")}}]
-        },
-        "근거요약": {
-            "rich_text": [{"text": {"content": _truncate(opinion.get("reason_summary", ""), 2000)}}]
-        },
-        "원본영상ID": {
-            "rich_text": [{"text": {"content": opinion.get("video_id", "")}}]
-        },
-    }
-
-    # 추천일자 (있을 경우만)
-    upload_date = opinion.get("upload_date", "")
-    if upload_date:
-        properties["추천일자"] = {"date": {"start": upload_date}}
-
-    page = await create_page(s.notion.stock_opinion_db_id, properties)
-    if page:
+    session_maker = get_session_maker()
+    fake_page_id = f"so_{uuid.uuid4().hex[:8]}_{opinion.get('video_id', '')}"
+    
+    async with session_maker() as session:
+        new_opinion = StockOpinion(
+            page_id=fake_page_id,
+            original_name=opinion.get("name", ""),
+            normalized_name="",
+            normalization_status="미처리",
+            opinion_type=opinion.get("opinion_type", "추천"),
+            recommender=opinion.get("recommender", ""),
+            reason_summary=_truncate(opinion.get("reason_summary", ""), 2000),
+            upload_date=opinion.get("upload_date", ""),
+            video_id=opinion.get("video_id", "")
+        )
+        session.add(new_opinion)
+        await session.commit()
+        await session.refresh(new_opinion)
+        
         logger.info(f"종목의견 생성: {opinion.get('name', '')} ({opinion.get('opinion_type', '')})")
-    return page
+        return _to_dict(new_opinion)
 
 
 async def create_stock_opinions_batch(
     opinions: List[Dict[str, Any]],
 ) -> int:
     """여러 종목의견을 일괄 생성합니다. 생성 성공 수를 반환합니다."""
+    # Notion API와 달리 로컬 DB는 빠르므로 하나씩 넣어도 무방
     success_count = 0
     for opinion in opinions:
         result = await create_stock_opinion(opinion)
@@ -82,41 +92,36 @@ async def create_stock_opinions_batch(
 # ──────────────────────────────────────────────
 async def get_unprocessed_opinions() -> List[Dict[str, Any]]:
     """정규화_상태=미처리인 종목의견을 조회합니다."""
-    s = get_settings()
-    filter_body = {
-        "property": "정규화_상태",
-        "select": {"equals": "미처리"},
-    }
-    pages = await query_database(s.notion.stock_opinion_db_id, filter_body=filter_body)
-    return [_parse_opinion_page(p) for p in pages]
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        stmt = select(StockOpinion).where(StockOpinion.normalization_status == "미처리")
+        result = await session.execute(stmt)
+        return [_to_dict(so) for so in result.scalars().all()]
 
 
 async def get_normalized_names() -> List[str]:
     """정규화 완료된 종목명 목록을 반환합니다."""
-    s = get_settings()
-    filter_body = {
-        "property": "정규화_상태",
-        "select": {"equals": "완료"},
-    }
-    pages = await query_database(s.notion.stock_opinion_db_id, filter_body=filter_body)
-
+    session_maker = get_session_maker()
     names = set()
-    for page in pages:
-        props = page.get("properties", {})
-        name = _get_rich_text(props, "정규화_종목명")
-        if name:
-            names.add(name)
-    return sorted(names)
+    async with session_maker() as session:
+        stmt = select(StockOpinion.normalized_name).where(
+            StockOpinion.normalization_status == "완료"
+        )
+        result = await session.execute(stmt)
+        for name in result.scalars().all():
+            if name:
+                names.add(name)
+    return sorted(list(names))
 
 
 async def get_all_opinions() -> List[Dict[str, Any]]:
     """모든 종목의견을 조회합니다."""
-    s = get_settings()
-    pages = await query_database(
-        s.notion.stock_opinion_db_id,
-        sorts=[{"property": "추천일자", "direction": "descending"}],
-    )
-    return [_parse_opinion_page(p) for p in pages]
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        # 최신 업로드일자 기준으로 정렬
+        stmt = select(StockOpinion).order_by(StockOpinion.upload_date.desc())
+        result = await session.execute(stmt)
+        return [_to_dict(so) for so in result.scalars().all()]
 
 
 # ──────────────────────────────────────────────
@@ -128,59 +133,12 @@ async def update_normalization(
     status: str,  # "완료" | "수동확인필요"
 ) -> bool:
     """종목의견의 정규화 상태를 업데이트합니다."""
-    properties = {
-        "정규화_종목명": {
-            "rich_text": [{"text": {"content": normalized_name}}]
-        },
-        "정규화_상태": {
-            "select": {"name": status}
-        },
-    }
-    return await update_page(page_id, properties)
-
-
-# ──────────────────────────────────────────────
-# 파싱 헬퍼
-# ──────────────────────────────────────────────
-def _parse_opinion_page(page: Dict[str, Any]) -> Dict[str, Any]:
-    props = page.get("properties", {})
-    return {
-        "page_id": page.get("id"),
-        "original_name": _get_title(props, "원본_종목명"),
-        "normalized_name": _get_rich_text(props, "정규화_종목명"),
-        "normalization_status": _get_select(props, "정규화_상태"),
-        "opinion_type": _get_select(props, "의견유형"),
-        "recommendation_date": _get_date(props, "추천일자"),
-        "recommender": _get_rich_text(props, "추천인"),
-        "reason_summary": _get_rich_text(props, "근거요약"),
-        "video_id": _get_rich_text(props, "원본영상ID"),
-    }
-
-
-def _truncate(text: str, max_len: int) -> str:
-    return text[:max_len] if len(text) > max_len else text
-
-
-def _get_title(props: dict, key: str) -> str:
-    prop = props.get(key, {})
-    if "title" in prop and prop["title"]:
-        return prop["title"][0].get("plain_text", "")
-    return ""
-
-def _get_rich_text(props: dict, key: str) -> str:
-    prop = props.get(key, {})
-    if "rich_text" in prop and prop["rich_text"]:
-        return prop["rich_text"][0].get("plain_text", "")
-    return ""
-
-def _get_select(props: dict, key: str) -> str:
-    prop = props.get(key, {})
-    if "select" in prop and prop["select"]:
-        return prop["select"].get("name", "")
-    return ""
-
-def _get_date(props: dict, key: str) -> str:
-    prop = props.get(key, {})
-    if "date" in prop and prop["date"]:
-        return prop["date"].get("start", "")
-    return ""
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        stmt = update(StockOpinion).where(StockOpinion.page_id == page_id).values(
+            normalized_name=normalized_name,
+            normalization_status=status
+        )
+        await session.execute(stmt)
+        await session.commit()
+    return True
